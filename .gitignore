@@ -83,6 +83,8 @@ desktop.ini
 *.orig
 
 # Log files
+.chglog
+.kiro
 logs/
 *.log
 npm-debug.log*
@@ -91,6 +93,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Test coverage
+test-results
 coverage/
 *.lcov
 .nyc_output/
@@ -170,6 +173,8 @@ secrets.yaml
 core
 core.*
 *.core
+!agent/internal/core
+!tests/unit/agent/core
 
 # VS Code specific
 .vscode/*

@@ -47,6 +47,50 @@ build-agent:
 	@mkdir -p $(BIN_DIR)
 	cd agent && $(GO) build $(GOFLAGS) $(LDFLAGS) -o ../$(BIN_DIR)/openedr-agent ./cmd/agent
 
+# 跨平台构建Agent
+build-agent-all:
+	@echo "==> Building Agent for all platforms..."
+	@mkdir -p $(DIST_DIR)
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		echo "Building for $$os/$$arch..."; \
+		output=$(DIST_DIR)/openedr-agent-$(VERSION)-$$os-$$arch; \
+		if [ "$$os" = "windows" ]; then output="$$output.exe"; fi; \
+		cd agent && GOOS=$$os GOARCH=$$arch $(GO) build $(GOFLAGS) $(LDFLAGS) -o ../$$output ./cmd/agent; \
+		cd ..; \
+		if [ $$? -ne 0 ]; then \
+			echo "Failed to build for $$os/$$arch"; \
+			exit 1; \
+		fi; \
+	done
+
+# 打包Agent发布版本
+package-agent: build-agent-all
+	@echo "==> Packaging Agent releases..."
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		echo "Packaging for $$os/$$arch..."; \
+		pkg_name="openedr-agent-$(VERSION)-$$os-$$arch"; \
+		pkg_dir=$(DIST_DIR)/$$pkg_name; \
+		mkdir -p $$pkg_dir; \
+		binary=$(DIST_DIR)/openedr-agent-$(VERSION)-$$os-$$arch; \
+		if [ "$$os" = "windows" ]; then binary="$$binary.exe"; fi; \
+		cp $$binary $$pkg_dir/; \
+		cp -r agent/configs $$pkg_dir/ 2>/dev/null || true; \
+		cp agent/README.md $$pkg_dir/ 2>/dev/null || true; \
+		cp LICENSE $$pkg_dir/ 2>/dev/null || true; \
+		if [ "$$os" = "windows" ]; then \
+			cd $(DIST_DIR) && zip -r $$pkg_name.zip $$pkg_name && cd ..; \
+		else \
+			cd $(DIST_DIR) && tar -czf $$pkg_name.tar.gz $$pkg_name && cd ..; \
+		fi; \
+		rm -rf $$pkg_dir; \
+	done
+	@echo "==> Generating checksums..."
+	@cd $(DIST_DIR) && sha256sum openedr-agent-*.tar.gz openedr-agent-*.zip > checksums.txt 2>/dev/null || true
+
 # 构建eBPF程序
 build-ebpf:
 	@echo "==> Building eBPF programs..."
@@ -84,6 +128,38 @@ test:
 	else \
 		echo "==> Skipping web tests (package.json not found)"; \
 	fi
+
+# 运行单元测试
+test-unit:
+	@echo "==> Running unit tests..."
+	$(GO) test -v -race ./agent/... ./server/... ./shared/...
+
+# 运行基准测试
+test-benchmark:
+	@echo "==> Running benchmark tests..."
+	$(GO) test -bench=. -benchmem ./shared/logger/
+
+# 运行所有测试
+test-all:
+	@echo "==> Running all tests..."
+	$(GO) test -v -race ./...
+
+# 运行测试并生成覆盖率报告
+test-coverage:
+	@echo "==> Running tests with coverage..."
+	$(GO) test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+	@if [ -f coverage.out ]; then \
+		echo "==> Coverage summary:"; \
+		$(GO) tool cover -func=coverage.out | tail -1; \
+		echo "==> Generating HTML coverage report..."; \
+		$(GO) tool cover -html=coverage.out -o coverage.html; \
+		echo "==> Coverage report generated: coverage.html"; \
+	fi
+
+# 运行Agent测试
+test-agent:
+	@echo "==> Running Agent tests..."
+	cd agent && $(GO) test -v -race -coverprofile=coverage.out ./...
 
 # 运行基准测试
 bench:
@@ -222,7 +298,7 @@ security-scan:
 # 代码格式化
 fmt:
 	@echo "==> Formatting code..."
-	$(GO) fmt ./...
+	gofmt -w .
 	cd web && npm run format
 
 # 检查依赖更新

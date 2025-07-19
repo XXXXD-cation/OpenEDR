@@ -1,0 +1,32 @@
+version: "invalid-test"
+server_address: "" # Invalid: empty server address
+log_level: "invalid_level" # This will default to info
+log_file: "/tmp/invalid_test.log"
+
+performance:
+  max_cpu_percent: 0 # Invalid: must be between 1-100
+  max_memory_mb: 10 # Invalid: must be at least 50MB
+  event_buffer_size: 50 # Invalid: must be at least 100
+  batch_size: 10
+  flush_interval_seconds: 1
+
+update:
+  enabled: true
+  check_interval_hours: 1
+  update_server: "https://invalid.example.com"
+  auto_update: true
+
+collectors:
+  process:
+    enabled: true
+    sampling_rate: 2.0 # This might be invalid depending on validation
+  
+  network:
+    enabled: true
+    sampling_rate: -0.5 # Invalid: negative sampling rate
+  
+  file:
+    enabled: true
+    sampling_rate: 0.1
+    exclude_paths: ["/tmp"]
+    include_paths: []

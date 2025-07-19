@@ -1,6 +1,7 @@
 package tls
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -12,10 +13,11 @@ import (
 
 // TLSConfig TLS配置结构
 type TLSConfig struct {
-	CertFile   string // 证书文件路径
-	KeyFile    string // 私钥文件路径
-	CAFile     string // CA证书文件路径
-	ServerName string // 服务器名称
+	CertFile           string // 证书文件路径
+	KeyFile            string // 私钥文件路径
+	CAFile             string // CA证书文件路径
+	ServerName         string // 服务器名称
+	InsecureSkipVerify bool   // 跳过证书验证（仅用于测试）
 }
 
 // LoadServerTLSConfig 加载服务器端TLS配置（双向认证）
@@ -77,10 +79,11 @@ func LoadClientTLSConfig(config TLSConfig) (*tls.Config, error) {
 
 	// 配置TLS
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-		ServerName:   config.ServerName,
-		MinVersion:   tls.VersionTLS12,
+		Certificates:       []tls.Certificate{cert},
+		RootCAs:            caCertPool,
+		ServerName:         config.ServerName,
+		InsecureSkipVerify: config.InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
@@ -115,7 +118,9 @@ func GetCertificateFingerprint(certFile string) (string, error) {
 		return "", fmt.Errorf("failed to parse certificate: %w", err)
 	}
 
-	return fmt.Sprintf("%x", cert.Signature), nil
+	// 使用SHA256计算证书指纹
+	hash := sha256.Sum256(cert.Raw)
+	return fmt.Sprintf("%x", hash), nil
 }
 
 // GetCertificateFingerprintFromBytes 从证书字节数据获取指纹
@@ -125,5 +130,7 @@ func GetCertificateFingerprintFromBytes(certBytes []byte) (string, error) {
 		return "", fmt.Errorf("failed to parse certificate: %w", err)
 	}
 
-	return fmt.Sprintf("%x", cert.Signature), nil
+	// 使用SHA256计算证书指纹
+	hash := sha256.Sum256(cert.Raw)
+	return fmt.Sprintf("%x", hash), nil
 }

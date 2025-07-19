@@ -1,192 +1,288 @@
 package main
 
 import (
-	"context"
+	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
-	"time"
 
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/XXXXD-cation/OpenEDR/agent/internal/config"
+	"github.com/XXXXD-cation/OpenEDR/agent/internal/core"
+	"github.com/XXXXD-cation/OpenEDR/agent/internal/updater"
+	"github.com/XXXXD-cation/OpenEDR/shared/logger"
+)
 
-	"github.com/XXXXD-cation/OpenEDR/agent/internal/grpc"
-	"github.com/XXXXD-cation/OpenEDR/shared/proto/agent"
-	"github.com/XXXXD-cation/OpenEDR/shared/proto/common"
-	"github.com/XXXXD-cation/OpenEDR/shared/proto/events"
-	sharedTLS "github.com/XXXXD-cation/OpenEDR/shared/tls"
+var (
+	// Build variables (set by ldflags)
+	Version   = "dev"
+	BuildTime = "unknown"
+	GitCommit = "unknown"
 )
 
 func main() {
-	// 配置
-	serverAddr := "localhost:8443"
-	tlsConfig := sharedTLS.TLSConfig{
-		CertFile:   "certs/agent.crt",
-		KeyFile:    "certs/agent.key",
-		CAFile:     "certs/ca.crt",
-		ServerName: "localhost",
+	// Parse command line flags
+	var (
+		configFile  = flag.String("config", getDefaultConfigPath(), "configuration file path")
+		showVersion = flag.Bool("version", false, "show version information")
+		checkUpdate = flag.Bool("check-update", false, "check for updates")
+		install     = flag.Bool("install", false, "install agent as system service")
+		uninstall   = flag.Bool("uninstall", false, "uninstall agent service")
+		logLevel    = flag.String("log-level", "", "override log level")
+	)
+	flag.Parse()
+
+	// Show version information
+	if *showVersion {
+		fmt.Printf("OpenEDR Agent\n")
+		fmt.Printf("Version: %s\n", Version)
+		fmt.Printf("Build Time: %s\n", BuildTime)
+		fmt.Printf("Git Commit: %s\n", GitCommit)
+		fmt.Printf("Go Version: %s\n", runtime.Version())
+		fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		os.Exit(0)
 	}
 
-	// 创建Agent信息
-	agentInfo := &common.AgentInfo{
-		AgentId:      "test-agent-001",
-		Hostname:     getHostname(),
-		Os:           runtime.GOOS,
-		OsVersion:    "Unknown", // TODO: 获取实际OS版本
-		Architecture: runtime.GOARCH,
-		AgentVersion: "1.0.0",
-		LastSeen:     timestamppb.Now(),
-		IpAddress:    "127.0.0.1",         // TODO: 获取实际IP地址
-		MacAddress:   "00:00:00:00:00:00", // TODO: 获取实际MAC地址
-		Tags:         make(map[string]string),
-	}
-
-	// 创建gRPC客户端
-	clientConfig := grpc.ClientConfig{
-		ServerAddr: serverAddr,
-		TLSConfig:  tlsConfig,
-		AgentInfo:  agentInfo,
-		OnCommand:  handleCommand,
-	}
-
-	client, err := grpc.NewClient(clientConfig)
+	// Load configuration
+	cfg, err := config.Load(*configFile)
 	if err != nil {
-		log.Fatalf("Failed to create gRPC client: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
 	}
 
-	// 连接到服务器
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	log.Printf("Connecting to server: %s", serverAddr)
-	if err := client.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to server: %v", err)
+	// Override log level if specified
+	if *logLevel != "" {
+		cfg.LogLevel = *logLevel
 	}
 
-	// 注册Agent
-	if err := client.Register(ctx); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
+	// Initialize logger
+	logConfig := logger.LogConfig{
+		Level:      cfg.LogLevel,
+		File:       cfg.LogFile,
+		MaxSize:    100, // 100MB
+		MaxBackups: 5,
+		MaxAge:     30, // 30 days
+		Compress:   true,
 	}
 
-	log.Printf("Agent registered with ID: %s", client.GetAgentID())
-
-	// 启动事件生成器（测试用）
-	go eventGenerator(client)
-
-	// 启动健康检查
-	go healthChecker(client)
-
-	// 等待中断信号
-	gracefulShutdown(client)
-}
-
-func getHostname() string {
-	hostname, err := os.Hostname()
+	log, err := logger.New(logConfig)
 	if err != nil {
-		return "unknown"
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
-	return hostname
-}
+	defer log.Close()
 
-func handleCommand(cmd *agent.AgentCommand) error {
-	log.Printf("Received command: %s (%s)", cmd.CommandType, cmd.CommandId)
+	// Set global logger
+	logger.SetGlobalLogger(log)
 
-	// TODO: 实现实际的命令处理逻辑
-	switch cmd.CommandType {
-	case "restart":
-		log.Printf("Handling restart command")
-	case "update_config":
-		log.Printf("Handling config update command")
-	case "collect_info":
-		log.Printf("Handling info collection command")
-	case "isolate":
-		log.Printf("Handling isolation command")
-	default:
-		log.Printf("Unknown command type: %s", cmd.CommandType)
+	// Log startup information
+	log.Info("Starting OpenEDR Agent v%s", Version)
+	log.Info("Build: %s (commit: %s)", BuildTime, GitCommit)
+	log.Info("Platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+	log.Info("PID: %d", os.Getpid())
+
+	// Handle service installation/uninstallation
+	if *install {
+		if err := installService(); err != nil {
+			log.Fatal("Failed to install service: %v", err)
+		}
+		log.Info("Service installed successfully")
+		os.Exit(0)
 	}
 
-	return nil
-}
-
-func eventGenerator(client *grpc.Client) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	eventID := 1
-	for range ticker.C {
-		// 生成测试事件
-		event := &events.Event{
-			EventId:   fmt.Sprintf("event-%d", eventID),
-			AgentId:   client.GetAgentID(),
-			EventType: common.EventType_EVENT_TYPE_PROCESS,
-			Timestamp: timestamppb.Now(),
-			Hostname:  getHostname(),
-			EventData: &events.Event_ProcessEvent{
-				ProcessEvent: &events.ProcessEvent{
-					ProcessId:        fmt.Sprintf("pid-%d", eventID),
-					ParentProcessId:  "pid-0",
-					ProcessName:      "test-process",
-					CommandLine:      "test-process --arg1 --arg2",
-					ExecutablePath:   "/usr/bin/test-process",
-					WorkingDirectory: "/tmp",
-					User:             "testuser",
-					StartTime:        timestamppb.Now(),
-					ProcessHash:      "abc123def456",
-				},
-			},
-			Metadata:    make(map[string]string),
-			ThreatLevel: common.ThreatLevel_THREAT_LEVEL_INFO,
-			Tags:        []string{"test", "generated"},
+	if *uninstall {
+		if err := uninstallService(); err != nil {
+			log.Fatal("Failed to uninstall service: %v", err)
 		}
-
-		// 创建事件批次
-		eventBatch := &events.EventBatch{
-			Events:         []*events.Event{event},
-			BatchId:        fmt.Sprintf("batch-%d", eventID),
-			BatchTimestamp: timestamppb.Now(),
-			AgentId:        client.GetAgentID(),
-		}
-
-		// 发送事件
-		if err := client.SendEvents(eventBatch); err != nil {
-			log.Printf("Failed to send events: %v", err)
-		} else {
-			log.Printf("Sent event batch with %d events", len(eventBatch.Events))
-		}
-
-		eventID++
+		log.Info("Service uninstalled successfully")
+		os.Exit(0)
 	}
-}
 
-func healthChecker(client *grpc.Client) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := client.HealthCheck(ctx); err != nil {
-			log.Printf("Health check failed: %v", err)
-		} else {
-			log.Printf("Health check passed")
-		}
-		cancel()
+	// Check for updates if requested
+	if *checkUpdate {
+		checkForUpdates(cfg, log)
+		os.Exit(0)
 	}
-}
 
-func gracefulShutdown(client *grpc.Client) {
-	// 等待中断信号
+	// Set version in config
+	cfg.Version = Version
+
+	// Create agent instance
+	agent, err := core.New(cfg, log)
+	if err != nil {
+		log.Fatal("Failed to create agent: %v", err)
+	}
+
+	// Register collectors based on configuration
+	registerCollectors(agent, cfg, log)
+
+	// Start agent
+	if err := agent.Start(); err != nil {
+		log.Fatal("Failed to start agent: %v", err)
+	}
+
+	// Start update checker in background
+	if cfg.Update.Enabled {
+		go func() {
+			upd := updater.New(cfg, log)
+			upd.StartUpdateRoutine()
+		}()
+	}
+
+	// Watch for configuration changes
+	if err := cfg.Watch(func(newCfg *config.Config) {
+		log.Info("Configuration changed, reloading...")
+		// Handle configuration reload
+		// This could involve restarting collectors, updating log level, etc.
+	}); err != nil {
+		log.Error("Failed to start configuration watcher: %v", err)
+	}
+
+	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	<-sigChan
-	log.Println("Shutting down agent...")
+	sig := <-sigChan
+	log.Info("Received signal: %v", sig)
 
-	// 关闭客户端连接
-	if err := client.Close(); err != nil {
-		log.Printf("Error closing client: %v", err)
+	// Stop agent
+	if err := agent.Stop(); err != nil {
+		log.Error("Error stopping agent: %v", err)
 	}
 
-	log.Println("Agent stopped")
+	log.Info("Agent shutdown complete")
+}
+
+// getDefaultConfigPath returns the default configuration file path
+func getDefaultConfigPath() string {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join(os.Getenv("ProgramData"), "OpenEDR", "agent", "config.yaml")
+	case "darwin":
+		return "/Library/Application Support/OpenEDR/agent/config.yaml"
+	default:
+		return "/etc/openedr/agent/config.yaml"
+	}
+}
+
+// registerCollectors registers enabled collectors
+func registerCollectors(agent *core.Agent, cfg *config.Config, log logger.Logger) {
+	// TODO: Register actual collectors based on configuration
+	// For now, we'll add placeholder comments
+
+	/*
+		// Process collector
+		if cfg.Collectors.Process.Enabled {
+			collector := collectors.NewProcessCollector(cfg.Collectors.Process, log)
+			agent.RegisterCollector(collector)
+		}
+
+		// Network collector
+		if cfg.Collectors.Network.Enabled {
+			collector := collectors.NewNetworkCollector(cfg.Collectors.Network, log)
+			agent.RegisterCollector(collector)
+		}
+
+		// File collector
+		if cfg.Collectors.File.Enabled {
+			collector := collectors.NewFileCollector(cfg.Collectors.File, log)
+			agent.RegisterCollector(collector)
+		}
+
+		// Registry collector (Windows only)
+		if runtime.GOOS == "windows" && cfg.Collectors.Registry.Enabled {
+			collector := collectors.NewRegistryCollector(cfg.Collectors.Registry, log)
+			agent.RegisterCollector(collector)
+		}
+	*/
+}
+
+// checkForUpdates checks for available updates
+func checkForUpdates(cfg *config.Config, log logger.Logger) {
+	upd := updater.New(cfg, log)
+	info, err := upd.CheckForUpdates()
+	if err != nil {
+		log.Error("Failed to check for updates: %v", err)
+		return
+	}
+
+	if info == nil {
+		log.Info("No updates available")
+		return
+	}
+
+	log.Info("Update available:")
+	log.Info("  Current version: %s", cfg.Version)
+	log.Info("  Latest version: %s", info.Version)
+	log.Info("  Release date: %s", info.ReleaseDate.Format("2006-01-02"))
+	log.Info("  Description: %s", info.Description)
+	if info.Critical {
+		log.Warn("  This is a CRITICAL update!")
+	}
+}
+
+// Service installation functions (platform-specific implementations)
+
+// installService installs the agent as a system service
+func installService() error {
+	// Platform-specific implementation
+	switch runtime.GOOS {
+	case "windows":
+		return installWindowsService()
+	case "linux":
+		return installLinuxService()
+	case "darwin":
+		return installDarwinService()
+	default:
+		return fmt.Errorf("service installation not supported on %s", runtime.GOOS)
+	}
+}
+
+// uninstallService removes the agent service
+func uninstallService() error {
+	// Platform-specific implementation
+	switch runtime.GOOS {
+	case "windows":
+		return uninstallWindowsService()
+	case "linux":
+		return uninstallLinuxService()
+	case "darwin":
+		return uninstallDarwinService()
+	default:
+		return fmt.Errorf("service uninstallation not supported on %s", runtime.GOOS)
+	}
+}
+
+// Platform-specific service functions (to be implemented)
+
+func installWindowsService() error {
+	// TODO: Implement Windows service installation
+	return fmt.Errorf("Windows service installation not yet implemented")
+}
+
+func uninstallWindowsService() error {
+	// TODO: Implement Windows service uninstallation
+	return fmt.Errorf("Windows service uninstallation not yet implemented")
+}
+
+func installLinuxService() error {
+	// TODO: Implement systemd service installation
+	return fmt.Errorf("Linux service installation not yet implemented")
+}
+
+func uninstallLinuxService() error {
+	// TODO: Implement systemd service uninstallation
+	return fmt.Errorf("Linux service uninstallation not yet implemented")
+}
+
+func installDarwinService() error {
+	// TODO: Implement launchd service installation
+	return fmt.Errorf("macOS service installation not yet implemented")
+}
+
+func uninstallDarwinService() error {
+	// TODO: Implement launchd service uninstallation
+	return fmt.Errorf("macOS service uninstallation not yet implemented")
 }

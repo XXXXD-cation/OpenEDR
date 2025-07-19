@@ -1,0 +1,48 @@
+version: "test-1.0.0"
+server_address: "test.example.com:8443"
+log_level: "debug"
+log_file: "/tmp/test.log"
+
+tls:
+  cert_file: "testdata/certs/test.crt"
+  key_file: "testdata/certs/test.key"
+  ca_file: "testdata/certs/ca.crt"
+  server_name: "test.example.com"
+
+performance:
+  max_cpu_percent: 15
+  max_memory_mb: 256
+  event_buffer_size: 5000
+  batch_size: 50
+  flush_interval_seconds: 5
+
+update:
+  enabled: true
+  check_interval_hours: 6
+  update_server: "https://test-update.example.com"
+  auto_update: false
+
+collectors:
+  process:
+    enabled: true
+    sampling_rate: 1.0
+    exclude_paths: []
+    include_paths: []
+  
+  network:
+    enabled: true
+    sampling_rate: 0.5
+    exclude_paths: []
+    include_paths: []
+  
+  file:
+    enabled: true
+    sampling_rate: 0.1
+    exclude_paths: ["/tmp", "/var/tmp", "/proc", "/sys"]
+    include_paths: ["/home", "/opt", "/usr/local"]
+  
+  registry:
+    enabled: false
+    sampling_rate: 1.0
+    exclude_paths: []
+    include_paths: []
