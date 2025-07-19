@@ -202,3 +202,62 @@ func TestGetSetString(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown config key")
 }
+
+func TestLoad_PathValidation(t *testing.T) {
+	// Test dangerous path patterns (should be caught even in test environment)
+	dangerousPaths := []string{
+		"../../../etc/passwd",
+		"..\\..\\..\\windows\\system32\\config\\sam",
+		"/tmp/../../../etc/shadow",
+	}
+
+	for _, path := range dangerousPaths {
+		t.Run("dangerous_path_"+path, func(t *testing.T) {
+			_, err := Load(path)
+			// Should fail due to dangerous pattern detection
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "dangerous path pattern")
+		})
+	}
+}
+
+func TestContainsDangerousPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{
+			name:     "safe path",
+			path:     "/etc/openedr/config.yaml",
+			expected: false,
+		},
+		{
+			name:     "relative safe path",
+			path:     "config/agent.yaml",
+			expected: false,
+		},
+		{
+			name:     "path traversal with ../",
+			path:     "../../../etc/passwd",
+			expected: true,
+		},
+		{
+			name:     "path traversal with ..",
+			path:     "/tmp/../etc/shadow",
+			expected: true,
+		},
+		{
+			name:     "windows path traversal",
+			path:     "..\\..\\windows\\system32",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := containsDangerousPatterns(tt.path)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

@@ -187,7 +187,7 @@ func TestLoadClientTLSConfig_MissingFiles(t *testing.T) {
 	tlsConfig, err := LoadClientTLSConfig(config)
 	assert.Error(t, err)
 	assert.Nil(t, tlsConfig)
-	assert.Contains(t, err.Error(), "failed to load client certificate")
+	assert.Contains(t, err.Error(), "TLS configuration validation failed")
 }
 
 func TestTLSConfig_Validation(t *testing.T) {
@@ -297,4 +297,231 @@ func TestCertificateLoading(t *testing.T) {
 	caCertPool := x509.NewCertPool()
 	ok := caCertPool.AppendCertsFromPEM(caData)
 	assert.True(t, ok)
+}
+
+func TestValidateTLSConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	certFile, keyFile, caFile := createTestCertificates(t, tempDir)
+
+	tests := []struct {
+		name           string
+		config         TLSConfig
+		expectedValid  bool
+		expectedErrors int
+		expectedWarns  int
+	}{
+		{
+			name: "valid production config",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: false,
+				Environment:        EnvironmentProduction,
+			},
+			expectedValid:  true,
+			expectedErrors: 0,
+			expectedWarns:  0,
+		},
+		{
+			name: "invalid production config with InsecureSkipVerify",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: true,
+				Environment:        EnvironmentProduction,
+			},
+			expectedValid:  false,
+			expectedErrors: 1,
+			expectedWarns:  0,
+		},
+		{
+			name: "development config with InsecureSkipVerify",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: true,
+				Environment:        EnvironmentDevelopment,
+			},
+			expectedValid:  true,
+			expectedErrors: 0,
+			expectedWarns:  1,
+		},
+		{
+			name: "missing certificate file",
+			config: TLSConfig{
+				CertFile:    "/nonexistent/cert.pem",
+				KeyFile:     keyFile,
+				CAFile:      caFile,
+				ServerName:  "localhost", // Add server name to avoid additional warning
+				Environment: EnvironmentProduction,
+			},
+			expectedValid:  false,
+			expectedErrors: 1,
+			expectedWarns:  0,
+		},
+		{
+			name: "missing environment",
+			config: TLSConfig{
+				CertFile: certFile,
+				KeyFile:  keyFile,
+				CAFile:   caFile,
+			},
+			expectedValid:  true,
+			expectedErrors: 0,
+			expectedWarns:  1,
+		},
+		{
+			name: "production without server name",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				InsecureSkipVerify: false,
+				Environment:        EnvironmentProduction,
+			},
+			expectedValid:  true,
+			expectedErrors: 0,
+			expectedWarns:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ValidateTLSConfig(tt.config)
+			assert.Equal(t, tt.expectedValid, result.Valid)
+			assert.Len(t, result.Errors, tt.expectedErrors)
+			assert.Len(t, result.Warnings, tt.expectedWarns)
+		})
+	}
+}
+
+func TestValidateAndLogTLSConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	certFile, keyFile, caFile := createTestCertificates(t, tempDir)
+
+	// Test valid config
+	validConfig := TLSConfig{
+		CertFile:    certFile,
+		KeyFile:     keyFile,
+		CAFile:      caFile,
+		Environment: EnvironmentDevelopment,
+	}
+
+	err := ValidateAndLogTLSConfig(validConfig)
+	assert.NoError(t, err)
+
+	// Test invalid config
+	invalidConfig := TLSConfig{
+		CertFile:           certFile,
+		KeyFile:            keyFile,
+		CAFile:             caFile,
+		InsecureSkipVerify: true,
+		Environment:        EnvironmentProduction,
+	}
+
+	err = ValidateAndLogTLSConfig(invalidConfig)
+	assert.Error(t, err)
+	assert.Equal(t, ErrUnsafeTLSConfig, err)
+}
+
+func TestLoadClientTLSConfig_WithValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	certFile, keyFile, caFile := createTestCertificates(t, tempDir)
+
+	tests := []struct {
+		name        string
+		config      TLSConfig
+		expectError bool
+		expectSkip  bool
+	}{
+		{
+			name: "valid development config with InsecureSkipVerify",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: true,
+				Environment:        EnvironmentDevelopment,
+			},
+			expectError: false,
+			expectSkip:  true,
+		},
+		{
+			name: "production config with InsecureSkipVerify should be forced to false",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: true,
+				Environment:        EnvironmentProduction,
+			},
+			expectError: true, // Should fail validation
+			expectSkip:  false,
+		},
+		{
+			name: "valid production config",
+			config: TLSConfig{
+				CertFile:           certFile,
+				KeyFile:            keyFile,
+				CAFile:             caFile,
+				ServerName:         "localhost",
+				InsecureSkipVerify: false,
+				Environment:        EnvironmentProduction,
+			},
+			expectError: false,
+			expectSkip:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tlsConfig, err := LoadClientTLSConfig(tt.config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, tlsConfig)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, tlsConfig)
+				assert.Equal(t, tt.expectSkip, tlsConfig.InsecureSkipVerify)
+			}
+		})
+	}
+}
+
+func TestEnvironmentHelpers(t *testing.T) {
+	tests := []struct {
+		env    Environment
+		isProd bool
+		isDev  bool
+	}{
+		{EnvironmentProduction, true, false},
+		{EnvironmentStaging, false, false},
+		{EnvironmentDevelopment, false, true},
+		{EnvironmentTest, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.env), func(t *testing.T) {
+			assert.Equal(t, tt.isProd, IsProductionEnvironment(tt.env))
+			assert.Equal(t, tt.isDev, IsDevelopmentEnvironment(tt.env))
+		})
+	}
+}
+
+func TestSecurityError(t *testing.T) {
+	err := SecurityError{
+		Code:    "TEST_ERROR",
+		Message: "test error message",
+	}
+
+	assert.Equal(t, "TLS security error [TEST_ERROR]: test error message", err.Error())
 }
