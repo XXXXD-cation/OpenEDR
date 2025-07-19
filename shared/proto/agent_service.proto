@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package openedr.agent;
+
+option go_package = "github.com/XXXXD-cation/OpenEDR/shared/proto/agent";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "shared/proto/common.proto";
+import "shared/proto/events.proto";
+
+// Agent注册请求
+message RegisterRequest {
+  openedr.common.AgentInfo agent_info = 1;
+  string certificate_fingerprint = 2;
+}
+
+// Agent注册响应
+message RegisterResponse {
+  openedr.common.Response response = 1;
+  string agent_id = 2;
+  AgentConfig config = 3;
+  google.protobuf.Timestamp next_heartbeat = 4;
+}
+
+// Agent配置
+message AgentConfig {
+  int32 heartbeat_interval = 1; // seconds
+  int32 event_batch_size = 2;
+  int32 event_batch_timeout = 3; // seconds
+  repeated string enabled_collectors = 4;
+  map<string, string> collector_configs = 5;
+  LogConfig log_config = 6;
+  bool enable_real_time_events = 7;
+  repeated string blocked_processes = 8;
+  repeated string blocked_domains = 9;
+}
+
+// 日志配置
+message LogConfig {
+  openedr.common.LogLevel level = 1;
+  string output = 2; // file, console, syslog
+  string file_path = 3;
+  int32 max_file_size = 4; // MB
+  int32 max_backups = 5;
+  int32 max_age = 6; // days
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string agent_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  AgentStatus status = 3;
+  AgentMetrics metrics = 4;
+}
+
+// Agent状态
+message AgentStatus {
+  string version = 1;
+  google.protobuf.Timestamp uptime = 2;
+  string status = 3; // running, stopping, error
+  repeated string active_collectors = 4;
+  int64 events_processed = 5;
+  int64 events_sent = 6;
+  string last_error = 7;
+}
+
+// Agent性能指标
+message AgentMetrics {
+  double cpu_usage = 1;
+  int64 memory_usage = 2; // bytes
+  int64 disk_usage = 3; // bytes
+  int32 active_connections = 4;
+  int64 events_per_second = 5;
+  map<string, double> collector_metrics = 6;
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  openedr.common.Response response = 1;
+  google.protobuf.Timestamp next_heartbeat = 2;
+  repeated AgentCommand commands = 3;
+  AgentConfig updated_config = 4;
+}
+
+// Agent命令
+message AgentCommand {
+  string command_id = 1;
+  string command_type = 2; // restart, update_config, collect_info, isolate, etc.
+  map<string, string> parameters = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+// 命令执行结果
+message CommandResult {
+  string command_id = 1;
+  string agent_id = 2;
+  openedr.common.Status status = 3;
+  string output = 4;
+  string error = 5;
+  google.protobuf.Timestamp executed_at = 6;
+}
+
+// 事件上报请求
+message ReportEventsRequest {
+  string agent_id = 1;
+  openedr.events.EventBatch event_batch = 2;
+}
+
+// 事件上报响应
+message ReportEventsResponse {
+  openedr.common.Response response = 1;
+  int32 events_received = 2;
+  int32 events_processed = 3;
+  repeated string failed_event_ids = 4;
+}
+
+// 获取配置请求
+message GetConfigRequest {
+  string agent_id = 1;
+  string config_version = 2;
+}
+
+// 获取配置响应
+message GetConfigResponse {
+  openedr.common.Response response = 1;
+  AgentConfig config = 2;
+  string config_version = 3;
+}
+
+// 日志条目
+message LogEntry {
+  string agent_id = 1;
+  openedr.common.LogLevel level = 2;
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  string component = 5;
+  map<string, string> fields = 6;
+}
+
+// 日志上报请求
+message ReportLogsRequest {
+  repeated LogEntry logs = 1;
+}
+
+// 日志上报响应
+message ReportLogsResponse {
+  openedr.common.Response response = 1;
+  int32 logs_received = 2;
+}
+
+// Agent服务定义
+service AgentService {
+  // Agent注册
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  
+  // 心跳检查
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 事件上报 (流式)
+  rpc ReportEvents(stream ReportEventsRequest) returns (stream ReportEventsResponse);
+  
+  // 获取配置
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  
+  // 执行命令结果上报
+  rpc ReportCommandResult(CommandResult) returns (openedr.common.Response);
+  
+  // 日志上报
+  rpc ReportLogs(ReportLogsRequest) returns (ReportLogsResponse);
+  
+  // 健康检查
+  rpc HealthCheck(google.protobuf.Empty) returns (openedr.common.Response);
+} 

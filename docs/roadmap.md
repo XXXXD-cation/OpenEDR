@@ -16,11 +16,11 @@
 - [x] 单元测试框架
 
 #### 里程碑 1.2: 核心通信框架
-- [ ] protobuf协议定义
-- [ ] gRPC服务接口
-- [ ] TLS双向认证
-- [ ] Agent-Server通信基础
-- [ ] 心跳和健康检查
+- [x] protobuf协议定义
+- [x] gRPC服务接口
+- [x] TLS双向认证
+- [x] Agent-Server通信基础
+- [x] 心跳和健康检查
 
 #### 里程碑 1.3: 基础Agent框架
 - [ ] Agent架构设计
