@@ -45,18 +45,18 @@ echo "OpenEDR Infrastructure Health Check"
 echo "================================"
 echo ""
 
-# 检查PostgreSQL
-if ! check_service "PostgreSQL" "localhost" "5432" "pg_isready -h localhost -p 5432 -U openedr"; then
+# 检查PostgreSQL - 使用nc命令
+if ! check_service "PostgreSQL" "localhost" "5432" "nc -zv localhost 5432"; then
     FAILED_SERVICES+=("PostgreSQL")
 fi
 
-# 检查Elasticsearch
-if ! check_service "Elasticsearch" "localhost" "9200" "curl -s -f http://localhost:9200/_cluster/health"; then
+# 检查Elasticsearch - 使用curl
+if ! check_service "Elasticsearch" "localhost" "9200" "nc -zv localhost 9200"; then
     FAILED_SERVICES+=("Elasticsearch")
 fi
 
-# 检查Redis
-if ! check_service "Redis" "localhost" "6379" "redis-cli -h localhost -p 6379 ping"; then
+# 检查Redis - 使用nc命令（redis-cli可能未安装）
+if ! check_service "Redis" "localhost" "6379" "nc -zv localhost 6379"; then
     FAILED_SERVICES+=("Redis")
 fi
 
@@ -66,24 +66,30 @@ if ! check_service "Kafka" "localhost" "9092" "nc -zv localhost 9092"; then
 fi
 
 # 检查MinIO
-if ! check_service "MinIO" "localhost" "9000" "curl -s -f http://localhost:9000/minio/health/live"; then
+if ! check_service "MinIO" "localhost" "9000" "curl -s -f -m 5 http://localhost:9000/minio/health/live"; then
     FAILED_SERVICES+=("MinIO")
 fi
 
 # 检查Prometheus
-if ! check_service "Prometheus" "localhost" "9090" "curl -s -f http://localhost:9090/-/healthy"; then
+if ! check_service "Prometheus" "localhost" "9090" "curl -s -f -m 5 http://localhost:9090/-/healthy"; then
     FAILED_SERVICES+=("Prometheus")
 fi
 
 # 检查Grafana
-if ! check_service "Grafana" "localhost" "3000" "curl -s -f http://localhost:3000/api/health"; then
+if ! check_service "Grafana" "localhost" "3000" "curl -s -f -m 5 http://localhost:3000/api/health"; then
     FAILED_SERVICES+=("Grafana")
 fi
 
 # 检查Jaeger
-if ! check_service "Jaeger" "localhost" "16686" "curl -s -f http://localhost:16686/"; then
+if ! check_service "Jaeger" "localhost" "16686" "curl -s -f -m 5 http://localhost:16686/"; then
     FAILED_SERVICES+=("Jaeger")
 fi
+
+# 检查Docker容器状态
+echo ""
+echo "Docker Container Status:"
+echo "------------------------"
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep openedr || echo "No OpenEDR containers found"
 
 echo ""
 echo "================================"

@@ -31,7 +31,8 @@ module.exports = {
         'ci',
         'deps',
         'config',
-        'test'
+        'test',
+        'scripts'
       ]
     ],
     'subject-case': [2, 'never', ['sentence-case', 'start-case', 'pascal-case', 'upper-case']],
