@@ -1,0 +1,229 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+
+# Go specific
+/bin/
+/dist/
+/vendor/
+*.test
+*.prof
+*.out
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+
+# Node.js specific
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Build directories
+/build/
+/web/build/
+/web/dist/
+*.log
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+/certs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+# Log files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Docker volumes
+docker/volumes/
+postgres_data/
+elasticsearch_data/
+redis_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+venv/
+env/
+ENV/
+
+# Documentation build
+/docs/_build/
+/docs/site/
+*.pdf
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes
+*.kubeconfig
+
+# Agent/Server specific
+/agent/agent
+/server/server
+*.sqlite
+*.db
+
+# eBPF
+*.bpf.o
+vmlinux.h
+
+# Performance profiles
+*.pprof
+cpu.prof
+mem.prof
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
+# MinIO data
+.minio.sys/
+minio_data/
+
+# Prometheus data
+prometheus_data/
+
+# Grafana data
+grafana_data/
+
+# Generated files
+/shared/proto/*.pb.go
+/api/openapi.yaml
+/api/swagger.json
+
+# Config files with secrets
+config.local.yaml
+secrets.yaml
+
+# Crash dumps
+core
+core.*
+*.core
+
+# VS Code specific
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Local History for Visual Studio Code
+.history/
+.ionide/
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# macOS
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk 

@@ -1,0 +1,219 @@
+version: '3.8'
+
+services:
+  # PostgreSQL数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: openedr-postgres
+    environment:
+      POSTGRES_DB: openedr
+      POSTGRES_USER: openedr
+      POSTGRES_PASSWORD: openedr_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openedr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: openedr-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Kibana (可选，用于调试Elasticsearch)
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: openedr-kibana
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: openedr-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: openedr-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: openedr-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # MinIO (S3兼容存储)
+  minio:
+    image: minio/minio:latest
+    container_name: openedr-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Prometheus (监控)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: openedr-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana (监控面板)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: openedr-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # Jaeger (分布式追踪)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: openedr-jaeger
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+
+  # OpenEDR Server (开发模式)
+  # 注释掉以便本地开发
+  # server:
+  #   build:
+  #     context: ..
+  #     dockerfile: docker/server.Dockerfile
+  #   container_name: openedr-server
+  #   ports:
+  #     - "8080:8080"
+  #     - "9090:9090"
+  #   environment:
+  #     - DB_HOST=postgres
+  #     - DB_USER=openedr
+  #     - DB_PASSWORD=openedr_dev_password
+  #     - DB_NAME=openedr
+  #     - REDIS_URL=redis://redis:6379
+  #     - ELASTICSEARCH_URL=http://elasticsearch:9200
+  #     - KAFKA_BROKERS=kafka:29092
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     elasticsearch:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     kafka:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ../:/app
+  #   command: go run ./server/cmd/server
+
+  # Web UI (开发模式)
+  # 注释掉以便本地开发
+  # web:
+  #   build:
+  #     context: ..
+  #     dockerfile: docker/web.Dockerfile
+  #   container_name: openedr-web
+  #   ports:
+  #     - "3001:3000"
+  #   environment:
+  #     - REACT_APP_API_URL=http://localhost:8080/api/v1
+  #   volumes:
+  #     - ../web:/app
+  #   command: npm start
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+  redis_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: openedr-network 
