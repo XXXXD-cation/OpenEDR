@@ -94,8 +94,12 @@ lint:
 # 生成Protocol Buffers
 proto:
 	@echo "==> Generating Protocol Buffers..."
-	protoc --go_out=. --go_opt=paths=source_relative \
-		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	@mkdir -p shared/proto/common shared/proto/events shared/proto/agent
+	# 清理旧的生成文件
+	@rm -f shared/proto/*.pb.go shared/proto/*/*.pb.go
+	# 生成所有proto文件
+	protoc --go_out=. --go_opt=module=github.com/XXXXD-cation/OpenEDR \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/XXXXD-cation/OpenEDR \
 		shared/proto/*.proto
 
 # 构建Docker镜像

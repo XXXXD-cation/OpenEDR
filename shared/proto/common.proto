@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package openedr.common;
+
+option go_package = "github.com/XXXXD-cation/OpenEDR/shared/proto/common";
+
+import "google/protobuf/timestamp.proto";
+
+// 通用响应状态
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_SUCCESS = 1;
+  STATUS_ERROR = 2;
+  STATUS_TIMEOUT = 3;
+  STATUS_UNAUTHORIZED = 4;
+  STATUS_NOT_FOUND = 5;
+}
+
+// 日志级别
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARN = 3;
+  LOG_LEVEL_ERROR = 4;
+  LOG_LEVEL_FATAL = 5;
+}
+
+// 事件类型
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_PROCESS = 1;
+  EVENT_TYPE_NETWORK = 2;
+  EVENT_TYPE_FILE = 3;
+  EVENT_TYPE_REGISTRY = 4;
+  EVENT_TYPE_DNS = 5;
+  EVENT_TYPE_LOGIN = 6;
+  EVENT_TYPE_SYSTEM = 7;
+}
+
+// 威胁级别
+enum ThreatLevel {
+  THREAT_LEVEL_UNSPECIFIED = 0;
+  THREAT_LEVEL_INFO = 1;
+  THREAT_LEVEL_LOW = 2;
+  THREAT_LEVEL_MEDIUM = 3;
+  THREAT_LEVEL_HIGH = 4;
+  THREAT_LEVEL_CRITICAL = 5;
+}
+
+// Agent信息
+message AgentInfo {
+  string agent_id = 1;
+  string hostname = 2;
+  string os = 3;
+  string os_version = 4;
+  string architecture = 5;
+  string agent_version = 6;
+  google.protobuf.Timestamp last_seen = 7;
+  string ip_address = 8;
+  string mac_address = 9;
+  map<string, string> tags = 10;
+}
+
+// 通用响应
+message Response {
+  Status status = 1;
+  string message = 2;
+  string request_id = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// 分页信息
+message Pagination {
+  int32 page = 1;
+  int32 page_size = 2;
+  int64 total = 3;
+}
+
+// 时间范围
+message TimeRange {
+  google.protobuf.Timestamp start = 1;
+  google.protobuf.Timestamp end = 2;
+} 

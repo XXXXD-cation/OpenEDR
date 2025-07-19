@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package openedr.events;
+
+option go_package = "github.com/XXXXD-cation/OpenEDR/shared/proto/events";
+
+import "google/protobuf/timestamp.proto";
+import "shared/proto/common.proto";
+
+// 进程事件
+message ProcessEvent {
+  string process_id = 1;
+  string parent_process_id = 2;
+  string process_name = 3;
+  string command_line = 4;
+  string executable_path = 5;
+  string working_directory = 6;
+  string user = 7;
+  google.protobuf.Timestamp start_time = 8;
+  google.protobuf.Timestamp end_time = 9;
+  int32 exit_code = 10;
+  string process_hash = 11;
+  repeated string loaded_modules = 12;
+  map<string, string> environment = 13;
+}
+
+// 网络事件
+message NetworkEvent {
+  string process_id = 1;
+  string protocol = 2;
+  string local_address = 3;
+  int32 local_port = 4;
+  string remote_address = 5;
+  int32 remote_port = 6;
+  string direction = 7; // inbound, outbound
+  int64 bytes_sent = 8;
+  int64 bytes_received = 9;
+  google.protobuf.Timestamp connection_time = 10;
+  google.protobuf.Timestamp close_time = 11;
+  string connection_state = 12;
+}
+
+// 文件事件
+message FileEvent {
+  string process_id = 1;
+  string file_path = 2;
+  string operation = 3; // create, modify, delete, read, write, rename
+  string old_path = 4; // for rename operations
+  int64 file_size = 5;
+  string file_hash = 6;
+  string file_type = 7;
+  google.protobuf.Timestamp access_time = 8;
+  google.protobuf.Timestamp modify_time = 9;
+  google.protobuf.Timestamp create_time = 10;
+  string permissions = 11;
+  string owner = 12;
+}
+
+// 注册表事件 (Windows)
+message RegistryEvent {
+  string process_id = 1;
+  string key_path = 2;
+  string value_name = 3;
+  string operation = 4; // create, modify, delete, query
+  string value_type = 5;
+  string old_value = 6;
+  string new_value = 7;
+  google.protobuf.Timestamp timestamp = 8;
+}
+
+// DNS事件
+message DNSEvent {
+  string process_id = 1;
+  string query_name = 2;
+  string query_type = 3;
+  repeated string answers = 4;
+  string response_code = 5;
+  google.protobuf.Timestamp query_time = 6;
+  int32 response_time_ms = 7;
+  string dns_server = 8;
+}
+
+// 登录事件
+message LoginEvent {
+  string session_id = 1;
+  string user_name = 2;
+  string domain = 3;
+  string login_type = 4; // interactive, network, service, batch
+  string source_address = 5;
+  string workstation = 6;
+  google.protobuf.Timestamp login_time = 7;
+  google.protobuf.Timestamp logout_time = 8;
+  bool success = 9;
+  string failure_reason = 10;
+}
+
+// 系统事件
+message SystemEvent {
+  string event_id = 1;
+  string source = 2;
+  string category = 3;
+  string description = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  map<string, string> attributes = 6;
+}
+
+// 统一事件结构
+message Event {
+  string event_id = 1;
+  string agent_id = 2;
+  openedr.common.EventType event_type = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  string hostname = 5;
+  
+  // 事件具体内容 (oneof)
+  oneof event_data {
+    ProcessEvent process_event = 10;
+    NetworkEvent network_event = 11;
+    FileEvent file_event = 12;
+    RegistryEvent registry_event = 13;
+    DNSEvent dns_event = 14;
+    LoginEvent login_event = 15;
+    SystemEvent system_event = 16;
+  }
+  
+  // 元数据
+  map<string, string> metadata = 20;
+  openedr.common.ThreatLevel threat_level = 21;
+  repeated string tags = 22;
+}
+
+// 事件批次
+message EventBatch {
+  repeated Event events = 1;
+  string batch_id = 2;
+  google.protobuf.Timestamp batch_timestamp = 3;
+  string agent_id = 4;
+} 
