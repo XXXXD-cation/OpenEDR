@@ -78,7 +78,12 @@ build-cross:
 test:
 	@echo "==> Running tests..."
 	$(GO) test -v -race -coverprofile=coverage.out ./...
-	cd web && npm test
+	@if [ -f web/package.json ]; then \
+		echo "==> Running web tests..."; \
+		cd web && npm test; \
+	else \
+		echo "==> Skipping web tests (package.json not found)"; \
+	fi
 
 # 运行基准测试
 bench:

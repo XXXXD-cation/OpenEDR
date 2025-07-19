@@ -6,6 +6,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // TLSConfig TLS配置结构
@@ -92,7 +94,13 @@ func LoadClientTLSConfig(config TLSConfig) (*tls.Config, error) {
 
 // GetCertificateFingerprint 获取证书指纹
 func GetCertificateFingerprint(certFile string) (string, error) {
-	certPEM, err := os.ReadFile(certFile)
+	// 验证文件路径，防止路径遍历攻击
+	cleanPath := filepath.Clean(certFile)
+	if strings.Contains(cleanPath, "..") {
+		return "", fmt.Errorf("invalid certificate path: potential path traversal")
+	}
+
+	certPEM, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read certificate file: %w", err)
 	}
