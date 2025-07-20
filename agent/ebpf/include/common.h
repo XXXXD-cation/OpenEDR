@@ -742,28 +742,6 @@ static __always_inline int should_monitor_file_type(const char *filename) {
     return 1; // File type should be monitored
 }
 
-static __always_inline int is_syscall_in_whitelist(__u64 syscall_nr) {
-    __u32 config_key = 0;
-    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
-    if (!cfg) {
-        return 1; // Default to allowed if config unavailable
-    }
-    
-    // If whitelist is empty, allow all syscalls
-    if (cfg->syscall_whitelist_size == 0) {
-        return 1;
-    }
-    
-    // Check if syscall is in whitelist
-    for (__u32 i = 0; i < cfg->syscall_whitelist_size && i < 32; i++) {
-        if (cfg->syscall_whitelist[i] == syscall_nr) {
-            return 1;
-        }
-    }
-    
-    return 0;
-}
-
 static __always_inline int should_capture_syscall_args(void) {
     __u32 config_key = 0;
     struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
@@ -1829,7 +1807,30 @@ static __always_inline struct syscall_event* allocate_syscall_event_with_retry(_
 
 // System call filtering and sampling functions
 
-// System call whitelist - only monitor critical system calls
+// System call whitelist filtering - implements requirement 3.3
+static __always_inline int is_syscall_in_whitelist(__u64 syscall_nr) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to allowed if config unavailable
+    }
+    
+    // If whitelist is empty, allow all syscalls
+    if (cfg->syscall_whitelist_size == 0) {
+        return 1;
+    }
+    
+    // Check if syscall is in whitelist
+    for (__u32 i = 0; i < cfg->syscall_whitelist_size && i < 32; i++) {
+        if (cfg->syscall_whitelist[i] == syscall_nr) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+// System call whitelist - only monitor critical system calls (fallback)
 static __always_inline int should_trace_syscall(__u64 syscall_nr) {
     // Based on requirements 3.1 and 3.3, filter to critical system calls
     switch (syscall_nr) {
@@ -2586,6 +2587,50 @@ static __always_inline int should_filter_network_address(struct network_event *e
     // but for now, we'll allow all IPv6 addresses
     
     return 0; // Don't filter
+}
+
+// System call return value validation and processing - implements requirement 6.2
+static __always_inline int validate_syscall_retval(__s64 ret, __u64 syscall_nr) {
+    // Basic validation of return values based on syscall type
+    switch (syscall_nr) {
+        case 2:    // sys_open
+        case 257:  // sys_openat
+        case 85:   // sys_creat
+            // File descriptor syscalls: -1 indicates error, >= 0 is valid fd
+            return (ret >= -1);
+            
+        case 0:    // sys_read
+        case 1:    // sys_write
+            // I/O syscalls: -1 indicates error, >= 0 is bytes transferred
+            return (ret >= -1);
+            
+        case 59:   // sys_execve
+        case 322:  // sys_execveat
+            // Exec syscalls: only return on error (negative values)
+            return (ret < 0);
+            
+        case 41:   // sys_socket
+        case 42:   // sys_connect
+        case 43:   // sys_accept
+        case 288:  // sys_accept4
+        case 49:   // sys_bind
+        case 50:   // sys_listen
+            // Socket syscalls: -1 indicates error, >= 0 is success
+            return (ret >= -1);
+            
+        case 10:   // sys_unlink
+        case 263:  // sys_unlinkat
+        case 82:   // sys_rename
+        case 316:  // sys_renameat2
+        case 83:   // sys_mkdir
+        case 84:   // sys_rmdir
+            // File operation syscalls: 0 is success, negative is error
+            return (ret <= 0);
+            
+        default:
+            // For unknown syscalls, accept all return values
+            return 1;
+    }
 }
 
 #endif /* __COMMON_H__ */
