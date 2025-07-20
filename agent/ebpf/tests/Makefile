@@ -9,15 +9,17 @@ INTEGRATION_TARGET := integration_test
 PERFORMANCE_TARGET := performance_test
 COMPATIBILITY_TARGET := compatibility_test
 PRODUCTION_TARGET := production_validation_test
+FILE_TYPE_FILTERING_TARGET := file_type_filtering_test
 UNIT_SOURCE := unit_test.c
 INTEGRATION_SOURCE := integration_test.c
 PERFORMANCE_SOURCE := performance_test.c
 COMPATIBILITY_SOURCE := compatibility_test.c
 PRODUCTION_SOURCE := production_validation_test.c
+FILE_TYPE_FILTERING_SOURCE := file_type_filtering_test.c
 
 .PHONY: all clean test unit-test integration-test performance-test compatibility-test production-validation-test run help
 
-all: $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET)
+all: $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET)
 
 $(UNIT_TARGET): $(UNIT_SOURCE)
 	@echo "Compiling unit tests..."
@@ -43,6 +45,11 @@ $(PRODUCTION_TARGET): $(PRODUCTION_SOURCE)
 	@echo "Compiling production validation tests..."
 	$(CC) $(CFLAGS) $(INCLUDES) $(LIBS) -o $(PRODUCTION_TARGET) $(PRODUCTION_SOURCE)
 	@echo "Production validation tests compiled successfully"
+
+$(FILE_TYPE_FILTERING_TARGET): $(FILE_TYPE_FILTERING_SOURCE)
+	@echo "Compiling file type filtering tests..."
+	$(CC) $(CFLAGS) $(INCLUDES) -o $(FILE_TYPE_FILTERING_TARGET) $(FILE_TYPE_FILTERING_SOURCE)
+	@echo "File type filtering tests compiled successfully"
 
 unit-test: $(UNIT_TARGET)
 	@echo "Running eBPF unit tests..."
@@ -74,13 +81,18 @@ production-validation-long: $(PRODUCTION_TARGET)
 	@echo "===================================================="
 	./$(PRODUCTION_TARGET) --long-term
 
-test: unit-test integration-test performance-test compatibility-test production-validation-test
+file-type-filtering-test: $(FILE_TYPE_FILTERING_TARGET)
+	@echo "Running file type filtering tests..."
+	@echo "===================================="
+	./$(FILE_TYPE_FILTERING_TARGET)
+
+test: unit-test integration-test performance-test compatibility-test production-validation-test file-type-filtering-test
 
 run: test
 
 clean:
 	@echo "Cleaning up..."
-	rm -f $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET)
+	rm -f $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET)
 	@echo "Clean complete"
 
 help:
@@ -95,6 +107,7 @@ help:
 	@echo "  compatibility-test         - Build and run compatibility tests"
 	@echo "  production-validation-test - Build and run production validation tests (quick)"
 	@echo "  production-validation-long - Build and run long-term production validation tests"
+	@echo "  file-type-filtering-test   - Build and run file type filtering tests"
 	@echo "  test                       - Build and run all tests"
 	@echo "  run                        - Alias for test"
 	@echo "  clean                      - Remove build artifacts"

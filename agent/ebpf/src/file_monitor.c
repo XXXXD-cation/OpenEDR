@@ -356,6 +356,13 @@ int trace_vfs_open(struct trace_event_raw_vfs_open *ctx) {
         return 0;
     }
     
+    // Apply file type filtering
+    if (!should_monitor_file_type(event->filename)) {
+        record_file_type_filtered();
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
     // Record statistics
     record_file_open_event();
     
@@ -420,6 +427,13 @@ int trace_vfs_write(struct trace_event_raw_vfs_write *ctx) {
     
     // Validate the extracted file event data
     if (!validate_file_event_data(event)) {
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    // Apply file type filtering
+    if (!should_monitor_file_type(event->filename)) {
+        record_file_type_filtered();
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -492,6 +506,13 @@ int trace_vfs_unlink(struct trace_event_raw_vfs_unlink *ctx) {
     
     // Validate the extracted file event data
     if (!validate_file_event_data(event)) {
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
+    // Apply file type filtering
+    if (!should_monitor_file_type(event->filename)) {
+        record_file_type_filtered();
         bpf_ringbuf_discard(event, 0);
         return 0;
     }
@@ -574,6 +595,13 @@ int trace_sys_openat_fallback(struct pt_regs *ctx) {
     event->size = 0;
     event->offset = 0;
     
+    // Apply file type filtering
+    if (!should_monitor_file_type(event->filename)) {
+        record_file_type_filtered();
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
+    
     record_file_open_event();
     bpf_ringbuf_submit(event, 0);
     
@@ -630,6 +658,9 @@ int trace_sys_write_fallback(struct pt_regs *ctx) {
     event->mode = 0;
     event->size = count;
     event->offset = 0;
+    
+    // Apply file type filtering (for fd-based operations, we can't filter by extension)
+    // So we allow all fd-based write operations
     
     record_file_write_event();
     bpf_ringbuf_submit(event, 0);
@@ -691,6 +722,13 @@ int trace_sys_unlinkat_fallback(struct pt_regs *ctx) {
     event->mode = 0;
     event->size = 0;
     event->offset = 0;
+    
+    // Apply file type filtering
+    if (!should_monitor_file_type(event->filename)) {
+        record_file_type_filtered();
+        bpf_ringbuf_discard(event, 0);
+        return 0;
+    }
     
     record_file_unlink_event();
     bpf_ringbuf_submit(event, 0);

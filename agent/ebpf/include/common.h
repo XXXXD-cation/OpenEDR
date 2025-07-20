@@ -309,6 +309,7 @@ struct debug_stats {
     __u64 file_write_events;    // File write events
     __u64 file_unlink_events;   // File delete/unlink events
     __u64 file_path_extraction_errors; // File path extraction failures
+    __u64 file_type_filtered;   // Files filtered by type/extension
     
     // System call monitoring statistics
     __u64 syscall_events;       // Total system call events
@@ -413,6 +414,11 @@ struct config {
     __u32 max_file_path_len;        // Maximum file path length to capture
     __u32 enable_file_write_monitoring;
     __u32 enable_file_delete_monitoring;
+    __u32 file_type_filter_enabled; // Enable file type filtering
+    __u32 file_extensions_whitelist[16]; // Allowed file extensions (as hashes)
+    __u32 file_extensions_blacklist[16]; // Blocked file extensions (as hashes)
+    __u32 whitelist_size;           // Number of entries in whitelist
+    __u32 blacklist_size;           // Number of entries in blacklist
     
     // Network monitoring configuration
     __u32 enable_tcp_monitoring;
@@ -574,6 +580,166 @@ static __always_inline int get_max_file_path_len(__u32 *len) {
     
     *len = cfg->max_file_path_len > 0 ? cfg->max_file_path_len : MAX_PATH_LEN;
     return 0;
+}
+
+static __always_inline int is_file_type_filtering_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 0; // Default to disabled
+    }
+    
+    return cfg->file_type_filter_enabled;
+}
+
+// Simple hash function for file extensions (djb2 algorithm)
+static __always_inline __u32 hash_file_extension(const char *ext, __u32 len) {
+    __u32 hash = 5381;
+    
+    // Limit loop iterations for eBPF verifier
+    for (__u32 i = 0; i < len && i < 16; i++) {
+        if (ext[i] == '\0') break;
+        
+        // Convert to lowercase for case-insensitive matching
+        char c = ext[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = c + ('a' - 'A');
+        }
+        
+        hash = ((hash << 5) + hash) + c;
+    }
+    
+    return hash;
+}
+
+// Extract file extension from filename
+static __always_inline int extract_file_extension(const char *filename, char *ext, __u32 ext_size) {
+    if (!filename || !ext || ext_size == 0) {
+        return -1;
+    }
+    
+    // Initialize extension buffer
+    ext[0] = '\0';
+    
+    // Find the last dot in the filename
+    int last_dot = -1;
+    int filename_len = 0;
+    
+    // Calculate filename length and find last dot (limit iterations for eBPF)
+    for (int i = 0; i < MAX_PATH_LEN && filename[i] != '\0'; i++) {
+        if (filename[i] == '.') {
+            last_dot = i;
+        }
+        filename_len = i + 1;
+    }
+    
+    // No extension found
+    if (last_dot == -1 || last_dot == filename_len - 1) {
+        return -1;
+    }
+    
+    // Extract extension (without the dot)
+    int ext_start = last_dot + 1;
+    int ext_len = filename_len - ext_start;
+    
+    // Ensure we don't exceed buffer size
+    if (ext_len >= ext_size) {
+        ext_len = ext_size - 1;
+    }
+    
+    // Copy extension using bpf_probe_read_kernel_str for safety
+    if (bpf_probe_read_kernel_str(ext, ext_size, &filename[ext_start]) < 0) {
+        return -1;
+    }
+    
+    return ext_len;
+}
+
+// Check if file extension is in whitelist
+static __always_inline int is_file_extension_whitelisted(const char *filename) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to allowed if config unavailable
+    }
+    
+    // If whitelist is empty, allow all files
+    if (cfg->whitelist_size == 0) {
+        return 1;
+    }
+    
+    // Extract file extension
+    char ext[16];
+    if (extract_file_extension(filename, ext, sizeof(ext)) < 0) {
+        // No extension found - check if we allow files without extensions
+        // For now, allow files without extensions
+        return 1;
+    }
+    
+    // Hash the extension
+    __u32 ext_hash = hash_file_extension(ext, sizeof(ext));
+    
+    // Check if extension hash is in whitelist
+    for (__u32 i = 0; i < cfg->whitelist_size && i < 16; i++) {
+        if (cfg->file_extensions_whitelist[i] == ext_hash) {
+            return 1; // Extension is whitelisted
+        }
+    }
+    
+    return 0; // Extension not in whitelist
+}
+
+// Check if file extension is in blacklist
+static __always_inline int is_file_extension_blacklisted(const char *filename) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 0; // Default to not blacklisted if config unavailable
+    }
+    
+    // If blacklist is empty, don't block any files
+    if (cfg->blacklist_size == 0) {
+        return 0;
+    }
+    
+    // Extract file extension
+    char ext[16];
+    if (extract_file_extension(filename, ext, sizeof(ext)) < 0) {
+        // No extension found - don't blacklist files without extensions
+        return 0;
+    }
+    
+    // Hash the extension
+    __u32 ext_hash = hash_file_extension(ext, sizeof(ext));
+    
+    // Check if extension hash is in blacklist
+    for (__u32 i = 0; i < cfg->blacklist_size && i < 16; i++) {
+        if (cfg->file_extensions_blacklist[i] == ext_hash) {
+            return 1; // Extension is blacklisted
+        }
+    }
+    
+    return 0; // Extension not in blacklist
+}
+
+// Main file type filtering function
+static __always_inline int should_monitor_file_type(const char *filename) {
+    // If file type filtering is disabled, monitor all files
+    if (!is_file_type_filtering_enabled()) {
+        return 1;
+    }
+    
+    // Check blacklist first (takes precedence)
+    if (is_file_extension_blacklisted(filename)) {
+        return 0; // File type is blacklisted
+    }
+    
+    // Check whitelist
+    if (!is_file_extension_whitelisted(filename)) {
+        return 0; // File type not in whitelist
+    }
+    
+    return 1; // File type should be monitored
 }
 
 static __always_inline int is_syscall_in_whitelist(__u64 syscall_nr) {
@@ -824,6 +990,14 @@ static __always_inline void record_file_sampling_skipped(void) {
     struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
     if (stats) {
         __sync_fetch_and_add(&stats->file_sampling_skipped, 1);
+    }
+}
+
+static __always_inline void record_file_type_filtered(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_type_filtered, 1);
     }
 }
 
