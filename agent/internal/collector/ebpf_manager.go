@@ -106,10 +106,44 @@ type DebugStats struct {
 	ConfigErrors       uint64 `json:"config_errors"`
 	DataReadErrors     uint64 `json:"data_read_errors"`
 	TracepointErrors   uint64 `json:"tracepoint_errors"`
+	
+	// Process monitoring statistics
 	ExecEvents         uint64 `json:"exec_events"`
 	ExitEvents         uint64 `json:"exit_events"`
-	SamplingSkipped    uint64 `json:"sampling_skipped"`
-	PidFiltered        uint64 `json:"pid_filtered"`
+	
+	// Network monitoring statistics
+	NetworkEvents       uint64 `json:"network_events"`
+	NetworkConnectEvents uint64 `json:"network_connect_events"`
+	NetworkAcceptEvents  uint64 `json:"network_accept_events"`
+	NetworkSendmsgEvents uint64 `json:"network_sendmsg_events"`
+	NetworkRecvmsgEvents uint64 `json:"network_recvmsg_events"`
+	NetworkIPv4Events    uint64 `json:"network_ipv4_events"`
+	NetworkIPv6Events    uint64 `json:"network_ipv6_events"`
+	NetworkTCPEvents     uint64 `json:"network_tcp_events"`
+	NetworkUDPEvents     uint64 `json:"network_udp_events"`
+	
+	// File system monitoring statistics
+	FileEvents               uint64 `json:"file_events"`
+	FileOpenEvents           uint64 `json:"file_open_events"`
+	FileWriteEvents          uint64 `json:"file_write_events"`
+	FileUnlinkEvents         uint64 `json:"file_unlink_events"`
+	FilePathExtractionErrors uint64 `json:"file_path_extraction_errors"`
+	
+	// System call monitoring statistics
+	SyscallEvents      uint64 `json:"syscall_events"`
+	SyscallEnterEvents uint64 `json:"syscall_enter_events"`
+	SyscallExitEvents  uint64 `json:"syscall_exit_events"`
+	SyscallFiltered    uint64 `json:"syscall_filtered"`
+	
+	// Sampling and filtering statistics
+	SamplingSkipped        uint64 `json:"sampling_skipped"`
+	NetworkSamplingSkipped uint64 `json:"network_sampling_skipped"`
+	FileSamplingSkipped    uint64 `json:"file_sampling_skipped"`
+	SyscallSamplingSkipped uint64 `json:"syscall_sampling_skipped"`
+	PidFiltered            uint64 `json:"pid_filtered"`
+	
+	// Error tracking and debugging
+	SocketInfoErrors   uint64 `json:"socket_info_errors"`
 	LastErrorTimestamp uint64 `json:"last_error_timestamp"`
 	LastErrorType      uint32 `json:"last_error_type"`
 	LastErrorPid       uint32 `json:"last_error_pid"`
@@ -122,6 +156,12 @@ type Config struct {
 	EnableFileMonitoring    bool
 	EnableSyscallMonitoring bool
 	SamplingRate            uint32
+	
+	// Network-specific configuration
+	EnableTCP           bool
+	EnableUDP           bool
+	EnableIPv6          bool
+	NetworkSamplingRate uint32
 }
 
 // NewEBPFManager creates a new eBPF manager
@@ -423,19 +463,67 @@ func (m *EBPFManager) configurePrograms(config *Config) error {
 		return fmt.Errorf("config_map not found")
 	}
 
-	// Create configuration structure
+	// Create configuration structure that matches the eBPF config struct
 	type ebpfConfig struct {
+		// Basic monitoring enables
 		EnableProcessMonitoring uint32
 		EnableNetworkMonitoring uint32
 		EnableFileMonitoring    uint32
 		EnableSyscallMonitoring uint32
-		SamplingRate            uint32
+		
+		// Global sampling rate (default for all event types)
+		SamplingRate uint32
+		
+		// Event-specific sampling rates
+		NetworkSamplingRate uint32
+		FileSamplingRate    uint32
+		SyscallSamplingRate uint32
+		
+		// File monitoring configuration
+		MaxFilePathLen            uint32 // Maximum file path length to capture
+		EnableFileWriteMonitoring uint32
+		EnableFileDeleteMonitoring uint32
+		
+		// Network monitoring configuration
+		EnableTcpMonitoring  uint32
+		EnableUdpMonitoring  uint32
+		EnableIpv6Monitoring uint32
+		
+		// System call monitoring configuration
+		SyscallWhitelist     [32]uint32 // Array of allowed system call numbers
+		SyscallWhitelistSize uint32     // Number of entries in whitelist
+		EnableSyscallArgs    uint32     // Whether to capture syscall arguments
+		EnableSyscallRetval  uint32     // Whether to capture return values
+		
+		// Performance tuning
+		RingbufSizeKb         uint32 // Ring buffer size in KB
+		MaxEventsPerSec       uint32 // Rate limiting threshold
+		EnableAdaptiveSampling uint32 // Enable dynamic sampling adjustment
 	}
 
 	cfg := ebpfConfig{
-		SamplingRate: config.SamplingRate,
+		SamplingRate:        config.SamplingRate,
+		NetworkSamplingRate: config.NetworkSamplingRate,
+		FileSamplingRate:    config.SamplingRate, // Use global sampling rate as default
+		SyscallSamplingRate: config.SamplingRate, // Use global sampling rate as default
+		
+		// File monitoring defaults
+		MaxFilePathLen:            4096, // MAX_PATH_LEN from eBPF code
+		EnableFileWriteMonitoring: 1,    // Enable by default
+		EnableFileDeleteMonitoring: 1,   // Enable by default
+		
+		// System call monitoring defaults
+		SyscallWhitelistSize: 0,    // Empty whitelist means allow all
+		EnableSyscallArgs:    1,    // Enable by default
+		EnableSyscallRetval:  1,    // Enable by default
+		
+		// Performance tuning defaults
+		RingbufSizeKb:         256, // 256KB ring buffer
+		MaxEventsPerSec:       10000, // 10K events per second limit
+		EnableAdaptiveSampling: 0,  // Disabled by default
 	}
 
+	// Set basic monitoring enables
 	if config.EnableProcessMonitoring {
 		cfg.EnableProcessMonitoring = 1
 	}
@@ -447,6 +535,17 @@ func (m *EBPFManager) configurePrograms(config *Config) error {
 	}
 	if config.EnableSyscallMonitoring {
 		cfg.EnableSyscallMonitoring = 1
+	}
+	
+	// Set network-specific configuration
+	if config.EnableTCP {
+		cfg.EnableTcpMonitoring = 1
+	}
+	if config.EnableUDP {
+		cfg.EnableUdpMonitoring = 1
+	}
+	if config.EnableIPv6 {
+		cfg.EnableIpv6Monitoring = 1
 	}
 
 	// Update configuration in eBPF map
@@ -577,37 +676,48 @@ func (m *EBPFManager) attachProcessProgramsV1() error {
 
 // attachNetworkPrograms attaches network monitoring programs
 func (m *EBPFManager) attachNetworkPrograms() error {
-	// Attach TCP v4 connect kprobe
-	if prog, exists := m.programs["trace_tcp_v4_connect"]; exists {
-		l, err := link.Kprobe("tcp_v4_connect", prog, nil)
+	attached := 0
+
+	// Attach inet_sock_set_state tracepoint for TCP connection state monitoring
+	if prog, exists := m.programs["trace_inet_sock_state"]; exists {
+		l, err := link.Tracepoint("sock", "inet_sock_set_state", prog, nil)
 		if err != nil {
-			m.logger.Warn("Failed to attach tcp_v4_connect kprobe: %v", err)
+			m.logger.Warn("Failed to attach inet_sock_set_state tracepoint: %v", err)
 		} else {
-			m.links["trace_tcp_v4_connect"] = l
-			m.logger.Debug("Attached tcp_v4_connect kprobe")
+			m.links["trace_inet_sock_state"] = l
+			m.logger.Debug("Attached inet_sock_set_state tracepoint")
+			attached++
 		}
 	}
 
-	// Attach inet_csk_accept kprobe
-	if prog, exists := m.programs["trace_inet_csk_accept"]; exists {
-		l, err := link.Kprobe("inet_csk_accept", prog, nil)
+	// Attach sock_sendmsg tracepoint for network data transmission monitoring
+	if prog, exists := m.programs["trace_sock_sendmsg"]; exists {
+		l, err := link.Tracepoint("sock", "sock_sendmsg", prog, nil)
 		if err != nil {
-			m.logger.Warn("Failed to attach inet_csk_accept kprobe: %v", err)
+			m.logger.Warn("Failed to attach sock_sendmsg tracepoint: %v", err)
 		} else {
-			m.links["trace_inet_csk_accept"] = l
-			m.logger.Debug("Attached inet_csk_accept kprobe")
+			m.links["trace_sock_sendmsg"] = l
+			m.logger.Debug("Attached sock_sendmsg tracepoint")
+			attached++
 		}
 	}
 
-	// Attach inet_csk_accept kretprobe
-	if prog, exists := m.programs["trace_inet_csk_accept_ret"]; exists {
-		l, err := link.Kretprobe("inet_csk_accept", prog, nil)
+	// Attach sock_recvmsg tracepoint for network data reception monitoring
+	if prog, exists := m.programs["trace_sock_recvmsg"]; exists {
+		l, err := link.Tracepoint("sock", "sock_recvmsg", prog, nil)
 		if err != nil {
-			m.logger.Warn("Failed to attach inet_csk_accept kretprobe: %v", err)
+			m.logger.Warn("Failed to attach sock_recvmsg tracepoint: %v", err)
 		} else {
-			m.links["trace_inet_csk_accept_ret"] = l
-			m.logger.Debug("Attached inet_csk_accept kretprobe")
+			m.links["trace_sock_recvmsg"] = l
+			m.logger.Debug("Attached sock_recvmsg tracepoint")
+			attached++
 		}
+	}
+
+	if attached > 0 {
+		m.logger.Info("Successfully attached %d network monitoring programs", attached)
+	} else {
+		m.logger.Warn("No network monitoring programs were attached")
 	}
 
 	return nil
@@ -892,16 +1002,51 @@ func (m *EBPFManager) GetDebugStats() (*DebugStats, error) {
 	// Read debug statistics from eBPF map
 	key := uint32(0)
 	var rawStats struct {
+		// General event statistics
 		EventsProcessed    uint64
 		EventsDropped      uint64
 		AllocationFailures uint64
 		ConfigErrors       uint64
 		DataReadErrors     uint64
 		TracepointErrors   uint64
+		
+		// Process monitoring statistics
 		ExecEvents         uint64
 		ExitEvents         uint64
-		SamplingSkipped    uint64
-		PidFiltered        uint64
+		
+		// Network monitoring statistics
+		NetworkEvents       uint64
+		NetworkConnectEvents uint64
+		NetworkAcceptEvents  uint64
+		NetworkSendmsgEvents uint64
+		NetworkRecvmsgEvents uint64
+		NetworkIPv4Events    uint64
+		NetworkIPv6Events    uint64
+		NetworkTCPEvents     uint64
+		NetworkUDPEvents     uint64
+		
+		// File system monitoring statistics
+		FileEvents               uint64
+		FileOpenEvents           uint64
+		FileWriteEvents          uint64
+		FileUnlinkEvents         uint64
+		FilePathExtractionErrors uint64
+		
+		// System call monitoring statistics
+		SyscallEvents      uint64
+		SyscallEnterEvents uint64
+		SyscallExitEvents  uint64
+		SyscallFiltered    uint64
+		
+		// Sampling and filtering statistics
+		SamplingSkipped        uint64
+		NetworkSamplingSkipped uint64
+		FileSamplingSkipped    uint64
+		SyscallSamplingSkipped uint64
+		PidFiltered            uint64
+		
+		// Error tracking and debugging
+		SocketInfoErrors   uint64
 		LastErrorTimestamp uint64
 		LastErrorType      uint32
 		LastErrorPid       uint32
@@ -918,10 +1063,44 @@ func (m *EBPFManager) GetDebugStats() (*DebugStats, error) {
 		ConfigErrors:       rawStats.ConfigErrors,
 		DataReadErrors:     rawStats.DataReadErrors,
 		TracepointErrors:   rawStats.TracepointErrors,
+		
+		// Process monitoring statistics
 		ExecEvents:         rawStats.ExecEvents,
 		ExitEvents:         rawStats.ExitEvents,
-		SamplingSkipped:    rawStats.SamplingSkipped,
-		PidFiltered:        rawStats.PidFiltered,
+		
+		// Network monitoring statistics
+		NetworkEvents:       rawStats.NetworkEvents,
+		NetworkConnectEvents: rawStats.NetworkConnectEvents,
+		NetworkAcceptEvents:  rawStats.NetworkAcceptEvents,
+		NetworkSendmsgEvents: rawStats.NetworkSendmsgEvents,
+		NetworkRecvmsgEvents: rawStats.NetworkRecvmsgEvents,
+		NetworkIPv4Events:    rawStats.NetworkIPv4Events,
+		NetworkIPv6Events:    rawStats.NetworkIPv6Events,
+		NetworkTCPEvents:     rawStats.NetworkTCPEvents,
+		NetworkUDPEvents:     rawStats.NetworkUDPEvents,
+		
+		// File system monitoring statistics
+		FileEvents:               rawStats.FileEvents,
+		FileOpenEvents:           rawStats.FileOpenEvents,
+		FileWriteEvents:          rawStats.FileWriteEvents,
+		FileUnlinkEvents:         rawStats.FileUnlinkEvents,
+		FilePathExtractionErrors: rawStats.FilePathExtractionErrors,
+		
+		// System call monitoring statistics
+		SyscallEvents:      rawStats.SyscallEvents,
+		SyscallEnterEvents: rawStats.SyscallEnterEvents,
+		SyscallExitEvents:  rawStats.SyscallExitEvents,
+		SyscallFiltered:    rawStats.SyscallFiltered,
+		
+		// Sampling and filtering statistics
+		SamplingSkipped:        rawStats.SamplingSkipped,
+		NetworkSamplingSkipped: rawStats.NetworkSamplingSkipped,
+		FileSamplingSkipped:    rawStats.FileSamplingSkipped,
+		SyscallSamplingSkipped: rawStats.SyscallSamplingSkipped,
+		PidFiltered:            rawStats.PidFiltered,
+		
+		// Error tracking and debugging
+		SocketInfoErrors:   rawStats.SocketInfoErrors,
 		LastErrorTimestamp: rawStats.LastErrorTimestamp,
 		LastErrorType:      rawStats.LastErrorType,
 		LastErrorPid:       rawStats.LastErrorPid,
@@ -1020,15 +1199,55 @@ func (m *EBPFManager) LogDebugStats() {
 
 	m.logger.Info("eBPF Debug Statistics:")
 	m.logger.Info("  Events Processed: %d", stats.EventsProcessed)
-	m.logger.Info("  Exec Events: %d", stats.ExecEvents)
-	m.logger.Info("  Exit Events: %d", stats.ExitEvents)
 	m.logger.Info("  Events Dropped: %d", stats.EventsDropped)
 	m.logger.Info("  Allocation Failures: %d", stats.AllocationFailures)
 	m.logger.Info("  Config Errors: %d", stats.ConfigErrors)
 	m.logger.Info("  Data Read Errors: %d", stats.DataReadErrors)
 	m.logger.Info("  Tracepoint Errors: %d", stats.TracepointErrors)
-	m.logger.Info("  Sampling Skipped: %d", stats.SamplingSkipped)
-	m.logger.Info("  PID Filtered: %d", stats.PidFiltered)
+	
+	// Process monitoring statistics
+	m.logger.Info("  Process Events:")
+	m.logger.Info("    Exec Events: %d", stats.ExecEvents)
+	m.logger.Info("    Exit Events: %d", stats.ExitEvents)
+	
+	// Network monitoring statistics
+	m.logger.Info("  Network Events:")
+	m.logger.Info("    Total Network Events: %d", stats.NetworkEvents)
+	m.logger.Info("    Connect Events: %d", stats.NetworkConnectEvents)
+	m.logger.Info("    Accept Events: %d", stats.NetworkAcceptEvents)
+	m.logger.Info("    Sendmsg Events: %d", stats.NetworkSendmsgEvents)
+	m.logger.Info("    Recvmsg Events: %d", stats.NetworkRecvmsgEvents)
+	m.logger.Info("    IPv4 Events: %d", stats.NetworkIPv4Events)
+	m.logger.Info("    IPv6 Events: %d", stats.NetworkIPv6Events)
+	m.logger.Info("    TCP Events: %d", stats.NetworkTCPEvents)
+	m.logger.Info("    UDP Events: %d", stats.NetworkUDPEvents)
+	
+	// File system monitoring statistics
+	m.logger.Info("  File Events:")
+	m.logger.Info("    Total File Events: %d", stats.FileEvents)
+	m.logger.Info("    Open Events: %d", stats.FileOpenEvents)
+	m.logger.Info("    Write Events: %d", stats.FileWriteEvents)
+	m.logger.Info("    Unlink Events: %d", stats.FileUnlinkEvents)
+	m.logger.Info("    Path Extraction Errors: %d", stats.FilePathExtractionErrors)
+	
+	// System call monitoring statistics
+	m.logger.Info("  Syscall Events:")
+	m.logger.Info("    Total Syscall Events: %d", stats.SyscallEvents)
+	m.logger.Info("    Enter Events: %d", stats.SyscallEnterEvents)
+	m.logger.Info("    Exit Events: %d", stats.SyscallExitEvents)
+	m.logger.Info("    Filtered: %d", stats.SyscallFiltered)
+	
+	// Sampling and filtering statistics
+	m.logger.Info("  Filtering Statistics:")
+	m.logger.Info("    Sampling Skipped: %d", stats.SamplingSkipped)
+	m.logger.Info("    Network Sampling Skipped: %d", stats.NetworkSamplingSkipped)
+	m.logger.Info("    File Sampling Skipped: %d", stats.FileSamplingSkipped)
+	m.logger.Info("    Syscall Sampling Skipped: %d", stats.SyscallSamplingSkipped)
+	m.logger.Info("    PID Filtered: %d", stats.PidFiltered)
+	
+	// Error tracking
+	m.logger.Info("  Error Statistics:")
+	m.logger.Info("    Socket Info Errors: %d", stats.SocketInfoErrors)
 
 	if stats.LastErrorTimestamp > 0 {
 		lastErrorTime := time.Unix(0, int64(stats.LastErrorTimestamp))

@@ -2348,4 +2348,217 @@ static __always_inline int should_process_network_event(__u16 family, __u16 prot
 
 #endif /* USE_KPROBE_FALLBACK */
 
+// Network monitoring helper functions
+
+// Check if network event should be processed based on configuration and filtering
+static __always_inline int should_process_network_event(__u16 family, __u16 protocol) {
+    __u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    
+    // PID filtering check
+    if (!should_trace_pid(pid)) {
+        record_pid_filtered();
+        return 0;
+    }
+    
+    // Check if network monitoring is enabled
+    __u32 enabled = 0;
+    get_config_value_safe(MONITOR_NETWORK, &enabled, 1);
+    if (!enabled) {
+        return 0;
+    }
+    
+    // Check protocol-specific configuration
+    if (protocol == IPPROTO_TCP && !is_tcp_monitoring_enabled()) {
+        return 0;
+    }
+    
+    if (protocol == IPPROTO_UDP && !is_udp_monitoring_enabled()) {
+        return 0;
+    }
+    
+    // Check IPv6 support
+    if (family == AF_INET6 && !is_ipv6_monitoring_enabled()) {
+        return 0;
+    }
+    
+    // Apply network-specific sampling
+    __u32 rate = 100;
+    get_network_sampling_rate(&rate);
+    
+    if (!should_sample(rate)) {
+        record_network_sampling_skipped();
+        return 0;
+    }
+    
+    return 1;
+}
+
+// Allocate network event with retry logic
+static __always_inline struct network_event* allocate_network_event_with_retry(__u32 event_type) {
+    struct network_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (!event) {
+        // Try once more with BPF_RB_NO_WAKEUP flag
+        event = bpf_ringbuf_reserve(&events, sizeof(*event), BPF_RB_NO_WAKEUP);
+        if (!event) {
+            record_error(ERROR_ALLOCATION_FAILURE);
+            return NULL;
+        }
+    }
+    
+    // Initialize event header
+    fill_event_header(&event->header, event_type);
+    
+    // Initialize network-specific fields
+    event->family = 0;
+    event->protocol = 0;
+    event->sport = 0;
+    event->dport = 0;
+    event->saddr_v4 = 0;
+    event->daddr_v4 = 0;
+    __builtin_memset(event->saddr_v6, 0, sizeof(event->saddr_v6));
+    __builtin_memset(event->daddr_v6, 0, sizeof(event->daddr_v6));
+    
+    return event;
+}
+
+// Fill network information from inet_sock_set_state tracepoint context
+static __always_inline int fill_network_info_from_inet_sock_state(
+    struct network_event *event,
+    struct trace_event_raw_inet_sock_set_state *ctx) {
+    
+    if (!event || !ctx) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // Fill basic network information
+    event->family = ctx->family;
+    event->protocol = ctx->protocol;
+    event->sport = bpf_ntohs(ctx->sport);
+    event->dport = bpf_ntohs(ctx->dport);
+    
+    // Fill address information based on family
+    if (ctx->family == AF_INET) {
+        // IPv4 addresses
+        __builtin_memcpy(&event->saddr_v4, ctx->saddr, 4);
+        __builtin_memcpy(&event->daddr_v4, ctx->daddr, 4);
+        
+        // Convert from network byte order to host byte order
+        event->saddr_v4 = bpf_ntohl(event->saddr_v4);
+        event->daddr_v4 = bpf_ntohl(event->daddr_v4);
+        
+        // Clear IPv6 fields
+        __builtin_memset(event->saddr_v6, 0, sizeof(event->saddr_v6));
+        __builtin_memset(event->daddr_v6, 0, sizeof(event->daddr_v6));
+        
+    } else if (ctx->family == AF_INET6) {
+        // IPv6 addresses
+        __builtin_memcpy(event->saddr_v6, ctx->saddr_v6, 16);
+        __builtin_memcpy(event->daddr_v6, ctx->daddr_v6, 16);
+        
+        // Clear IPv4 fields
+        event->saddr_v4 = 0;
+        event->daddr_v4 = 0;
+        
+    } else {
+        // Unsupported address family
+        record_socket_info_error();
+        return 0;
+    }
+    
+    return 1;
+}
+
+// Extract IPv4 address and port information
+static __always_inline void extract_ipv4_info(struct network_event *event, __u32 saddr, __u32 daddr, __u16 sport, __u16 dport) {
+    event->family = AF_INET;
+    event->saddr_v4 = bpf_ntohl(saddr);
+    event->daddr_v4 = bpf_ntohl(daddr);
+    event->sport = bpf_ntohs(sport);
+    event->dport = bpf_ntohs(dport);
+    
+    // Clear IPv6 fields
+    __builtin_memset(event->saddr_v6, 0, sizeof(event->saddr_v6));
+    __builtin_memset(event->daddr_v6, 0, sizeof(event->daddr_v6));
+}
+
+// Extract IPv6 address and port information
+static __always_inline void extract_ipv6_info(struct network_event *event, __u8 *saddr_v6, __u8 *daddr_v6, __u16 sport, __u16 dport) {
+    event->family = AF_INET6;
+    __builtin_memcpy(event->saddr_v6, saddr_v6, 16);
+    __builtin_memcpy(event->daddr_v6, daddr_v6, 16);
+    event->sport = bpf_ntohs(sport);
+    event->dport = bpf_ntohs(dport);
+    
+    // Clear IPv4 fields
+    event->saddr_v4 = 0;
+    event->daddr_v4 = 0;
+}
+
+// Validate network event information
+static __always_inline int validate_network_event(struct network_event *event) {
+    if (!event) {
+        return 0;
+    }
+    
+    // Check address family
+    if (event->family != AF_INET && event->family != AF_INET6) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // Check protocol
+    if (event->protocol != IPPROTO_TCP && event->protocol != IPPROTO_UDP) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // Check port numbers (0 is valid for some cases)
+    if (event->sport > 65535 || event->dport > 65535) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    return 1;
+}
+
+// Handle network event allocation failure
+static __always_inline int handle_network_allocation_failure(void) {
+    record_error(ERROR_ALLOCATION_FAILURE);
+    return 0;
+}
+
+// Handle network information extraction error
+static __always_inline int handle_network_info_error(void) {
+    record_socket_info_error();
+    record_error(ERROR_DATA_READ_ERROR);
+    return 0;
+}
+
+// Check if network event should be filtered based on address
+static __always_inline int should_filter_network_address(struct network_event *event) {
+    if (!event) {
+        return 1; // Filter out invalid events
+    }
+    
+    // Filter out loopback addresses for IPv4
+    if (event->family == AF_INET) {
+        // 127.0.0.0/8 is loopback
+        __u32 addr = event->saddr_v4;
+        if ((addr & 0xFF000000) == 0x7F000000) {
+            return 1; // Filter loopback
+        }
+        
+        addr = event->daddr_v4;
+        if ((addr & 0xFF000000) == 0x7F000000) {
+            return 1; // Filter loopback
+        }
+    }
+    
+    // For IPv6, we could add similar filtering for ::1
+    // but for now, we'll allow all IPv6 addresses
+    
+    return 0; // Don't filter
+}
+
 #endif /* __COMMON_H__ */

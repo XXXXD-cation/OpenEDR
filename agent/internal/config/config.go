@@ -61,10 +61,10 @@ type Update struct {
 
 // Collectors represents collector settings
 type Collectors struct {
-	Process  CollectorConfig `yaml:"process" json:"process"`
-	Network  CollectorConfig `yaml:"network" json:"network"`
-	File     CollectorConfig `yaml:"file" json:"file"`
-	Registry CollectorConfig `yaml:"registry" json:"registry"`
+	Process  CollectorConfig        `yaml:"process" json:"process"`
+	Network  NetworkCollectorConfig `yaml:"network" json:"network"`
+	File     CollectorConfig        `yaml:"file" json:"file"`
+	Registry CollectorConfig        `yaml:"registry" json:"registry"`
 }
 
 // CollectorConfig represents individual collector configuration
@@ -73,6 +73,23 @@ type CollectorConfig struct {
 	SamplingRate float64  `yaml:"sampling_rate" json:"sampling_rate"`
 	ExcludePaths []string `yaml:"exclude_paths" json:"exclude_paths"`
 	IncludePaths []string `yaml:"include_paths" json:"include_paths"`
+}
+
+// NetworkCollectorConfig represents network-specific collector configuration
+type NetworkCollectorConfig struct {
+	CollectorConfig `yaml:",inline" json:",inline"`
+	
+	// Protocol-specific monitoring
+	EnableTCP  bool `yaml:"enable_tcp" json:"enable_tcp"`
+	EnableUDP  bool `yaml:"enable_udp" json:"enable_udp"`
+	EnableIPv6 bool `yaml:"enable_ipv6" json:"enable_ipv6"`
+	
+	// Network-specific sampling rates
+	NetworkSamplingRate uint32 `yaml:"network_sampling_rate" json:"network_sampling_rate"`
+	
+	// Connection tracking options
+	TrackConnections bool `yaml:"track_connections" json:"track_connections"`
+	TrackDataFlow    bool `yaml:"track_data_flow" json:"track_data_flow"`
 }
 
 // DefaultConfig returns the default configuration
@@ -110,9 +127,17 @@ func DefaultConfig() *Config {
 				Enabled:      true,
 				SamplingRate: 1.0,
 			},
-			Network: CollectorConfig{
-				Enabled:      true,
-				SamplingRate: 1.0,
+			Network: NetworkCollectorConfig{
+				CollectorConfig: CollectorConfig{
+					Enabled:      true,
+					SamplingRate: 1.0,
+				},
+				EnableTCP:           true,
+				EnableUDP:           true,
+				EnableIPv6:          true,
+				NetworkSamplingRate: 100, // 100% sampling by default
+				TrackConnections:    true,
+				TrackDataFlow:       false, // Disabled by default for performance
 			},
 			File: CollectorConfig{
 				Enabled:      true,
