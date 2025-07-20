@@ -252,19 +252,72 @@ struct trace_event_raw_sys_enter {
 
 // Debug and error statistics
 struct debug_stats {
+    // General event statistics
     __u64 events_processed;     // Total events processed
     __u64 events_dropped;       // Events dropped due to various reasons
     __u64 allocation_failures;  // Ring buffer allocation failures
     __u64 config_errors;        // Configuration read errors
     __u64 data_read_errors;     // Data read/extraction errors
     __u64 tracepoint_errors;    // Tracepoint-specific errors
+    
+    // Process monitoring statistics
     __u64 exec_events;          // Process execution events
     __u64 exit_events;          // Process exit events
+    
+    // Network monitoring statistics
+    __u64 network_events;       // Total network events
+    __u64 network_connect_events; // Network connection events
+    __u64 network_accept_events;  // Network accept events
+    __u64 network_sendmsg_events; // Network send message events
+    __u64 network_recvmsg_events; // Network receive message events
+    __u64 network_ipv4_events;    // IPv4 network events
+    __u64 network_ipv6_events;    // IPv6 network events
+    __u64 network_tcp_events;     // TCP protocol events
+    __u64 network_udp_events;     // UDP protocol events
+    
+    // File system monitoring statistics
+    __u64 file_events;          // Total file system events
+    __u64 file_open_events;     // File open events
+    __u64 file_write_events;    // File write events
+    __u64 file_unlink_events;   // File delete/unlink events
+    __u64 file_path_extraction_errors; // File path extraction failures
+    
+    // System call monitoring statistics
+    __u64 syscall_events;       // Total system call events
+    __u64 syscall_enter_events; // System call enter events
+    __u64 syscall_exit_events;  // System call exit events
+    __u64 syscall_filtered;     // System calls filtered by whitelist
+    
+    // Sampling and filtering statistics
     __u64 sampling_skipped;     // Events skipped due to sampling
+    __u64 network_sampling_skipped; // Network events skipped by sampling
+    __u64 file_sampling_skipped;    // File events skipped by sampling
+    __u64 syscall_sampling_skipped; // Syscall events skipped by sampling
     __u64 pid_filtered;         // Events filtered by PID
+    
+    // Error tracking and debugging
+    __u64 socket_info_errors;   // Socket information extraction errors
     __u64 last_error_timestamp; // Timestamp of last error
     __u32 last_error_type;      // Type of last error
     __u32 last_error_pid;       // PID that caused last error
+    
+    // Performance monitoring fields
+    __u64 last_event_timestamp; // Timestamp of last processed event
+    __u32 events_per_second;    // Current events per second rate
+    __u32 avg_processing_time_ns; // Average event processing time in nanoseconds
+    __u32 peak_events_per_second; // Peak events per second observed
+    __u32 ringbuf_utilization_percent; // Ring buffer utilization percentage
+    
+    // Adaptive sampling statistics
+    __u32 current_sampling_rate; // Current adaptive sampling rate
+    __u32 sampling_adjustments;  // Number of sampling rate adjustments
+    __u64 high_load_periods;     // Number of high load periods detected
+    __u64 low_load_periods;      // Number of low load periods detected
+    
+    // Memory and resource usage
+    __u32 max_concurrent_events; // Maximum concurrent events in processing
+    __u32 current_memory_usage_kb; // Current estimated memory usage in KB
+    __u32 peak_memory_usage_kb;    // Peak memory usage observed in KB
 };
 
 // Error types for statistics
@@ -283,6 +336,18 @@ enum monitor_type {
     MONITOR_FILE = 2,
     MONITOR_SYSCALL = 3,
     MONITOR_SAMPLING_RATE = 4,
+    MONITOR_NETWORK_SAMPLING_RATE = 5,
+    MONITOR_FILE_SAMPLING_RATE = 6,
+    MONITOR_SYSCALL_SAMPLING_RATE = 7,
+    MONITOR_TCP_ENABLED = 8,
+    MONITOR_UDP_ENABLED = 9,
+    MONITOR_IPV6_ENABLED = 10,
+    MONITOR_FILE_WRITE_ENABLED = 11,
+    MONITOR_FILE_DELETE_ENABLED = 12,
+    MONITOR_MAX_FILE_PATH_LEN = 13,
+    MONITOR_SYSCALL_ARGS_ENABLED = 14,
+    MONITOR_SYSCALL_RETVAL_ENABLED = 15,
+    MONITOR_ADAPTIVE_SAMPLING_ENABLED = 16,
 };
 
 // Helper macros
@@ -302,11 +367,40 @@ struct {
 
 // Configuration map
 struct config {
+    // Basic monitoring enables
     __u32 enable_process_monitoring;
     __u32 enable_network_monitoring;
     __u32 enable_file_monitoring;
     __u32 enable_syscall_monitoring;
+    
+    // Global sampling rate (default for all event types)
     __u32 sampling_rate;
+    
+    // Event-specific sampling rates
+    __u32 network_sampling_rate;
+    __u32 file_sampling_rate;
+    __u32 syscall_sampling_rate;
+    
+    // File monitoring configuration
+    __u32 max_file_path_len;        // Maximum file path length to capture
+    __u32 enable_file_write_monitoring;
+    __u32 enable_file_delete_monitoring;
+    
+    // Network monitoring configuration
+    __u32 enable_tcp_monitoring;
+    __u32 enable_udp_monitoring;
+    __u32 enable_ipv6_monitoring;
+    
+    // System call monitoring configuration
+    __u32 syscall_whitelist[32];    // Array of allowed system call numbers
+    __u32 syscall_whitelist_size;   // Number of entries in whitelist
+    __u32 enable_syscall_args;      // Whether to capture syscall arguments
+    __u32 enable_syscall_retval;    // Whether to capture return values
+    
+    // Performance tuning
+    __u32 ringbuf_size_kb;          // Ring buffer size in KB
+    __u32 max_events_per_sec;       // Rate limiting threshold
+    __u32 enable_adaptive_sampling; // Enable dynamic sampling adjustment
 };
 
 BPF_MAP(config_map, BPF_MAP_TYPE_ARRAY, __u32, struct config, 1);
@@ -357,6 +451,153 @@ static __always_inline int get_config_value(__u32 key, __u32 *value) {
     }
     
     return 0;
+}
+
+// Extended configuration access helpers for new monitoring types
+static __always_inline int get_network_sampling_rate(__u32 *rate) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return -1;
+    }
+    
+    *rate = cfg->network_sampling_rate > 0 ? cfg->network_sampling_rate : cfg->sampling_rate;
+    return 0;
+}
+
+static __always_inline int get_file_sampling_rate(__u32 *rate) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return -1;
+    }
+    
+    *rate = cfg->file_sampling_rate > 0 ? cfg->file_sampling_rate : cfg->sampling_rate;
+    return 0;
+}
+
+static __always_inline int get_syscall_sampling_rate(__u32 *rate) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return -1;
+    }
+    
+    *rate = cfg->syscall_sampling_rate > 0 ? cfg->syscall_sampling_rate : cfg->sampling_rate;
+    return 0;
+}
+
+static __always_inline int is_tcp_monitoring_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_tcp_monitoring;
+}
+
+static __always_inline int is_udp_monitoring_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_udp_monitoring;
+}
+
+static __always_inline int is_ipv6_monitoring_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_ipv6_monitoring;
+}
+
+static __always_inline int is_file_write_monitoring_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_file_write_monitoring;
+}
+
+static __always_inline int is_file_delete_monitoring_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_file_delete_monitoring;
+}
+
+static __always_inline int get_max_file_path_len(__u32 *len) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return -1;
+    }
+    
+    *len = cfg->max_file_path_len > 0 ? cfg->max_file_path_len : MAX_PATH_LEN;
+    return 0;
+}
+
+static __always_inline int is_syscall_in_whitelist(__u64 syscall_nr) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to allowed if config unavailable
+    }
+    
+    // If whitelist is empty, allow all syscalls
+    if (cfg->syscall_whitelist_size == 0) {
+        return 1;
+    }
+    
+    // Check if syscall is in whitelist
+    for (__u32 i = 0; i < cfg->syscall_whitelist_size && i < 32; i++) {
+        if (cfg->syscall_whitelist[i] == syscall_nr) {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+static __always_inline int should_capture_syscall_args(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_syscall_args;
+}
+
+static __always_inline int should_capture_syscall_retval(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 1; // Default to enabled
+    }
+    
+    return cfg->enable_syscall_retval;
+}
+
+static __always_inline int is_adaptive_sampling_enabled(void) {
+    __u32 config_key = 0;
+    struct config *cfg = bpf_map_lookup_elem(&config_map, &config_key);
+    if (!cfg) {
+        return 0; // Default to disabled
+    }
+    
+    return cfg->enable_adaptive_sampling;
 }
 
 // Sampling helper
@@ -419,6 +660,189 @@ static __always_inline void record_exit_event(void) {
     }
 }
 
+// Network event statistics recording
+static __always_inline void record_network_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_events, 1);
+        __sync_fetch_and_add(&stats->events_processed, 1);
+    }
+}
+
+static __always_inline void record_network_connect_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_connect_events, 1);
+        record_network_event();
+    }
+}
+
+static __always_inline void record_network_accept_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_accept_events, 1);
+        record_network_event();
+    }
+}
+
+static __always_inline void record_network_sendmsg_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_sendmsg_events, 1);
+        record_network_event();
+    }
+}
+
+static __always_inline void record_network_recvmsg_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_recvmsg_events, 1);
+        record_network_event();
+    }
+}
+
+static __always_inline void record_network_protocol_event(__u16 protocol) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        if (protocol == IPPROTO_TCP) {
+            __sync_fetch_and_add(&stats->network_tcp_events, 1);
+        } else if (protocol == IPPROTO_UDP) {
+            __sync_fetch_and_add(&stats->network_udp_events, 1);
+        }
+    }
+}
+
+static __always_inline void record_network_family_event(__u16 family) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        if (family == AF_INET) {
+            __sync_fetch_and_add(&stats->network_ipv4_events, 1);
+        } else if (family == AF_INET6) {
+            __sync_fetch_and_add(&stats->network_ipv6_events, 1);
+        }
+    }
+}
+
+static __always_inline void record_network_sampling_skipped(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->network_sampling_skipped, 1);
+    }
+}
+
+static __always_inline void record_socket_info_error(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->socket_info_errors, 1);
+    }
+}
+
+// File system event statistics recording
+static __always_inline void record_file_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_events, 1);
+        __sync_fetch_and_add(&stats->events_processed, 1);
+    }
+}
+
+static __always_inline void record_file_open_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_open_events, 1);
+        record_file_event();
+    }
+}
+
+static __always_inline void record_file_write_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_write_events, 1);
+        record_file_event();
+    }
+}
+
+static __always_inline void record_file_unlink_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_unlink_events, 1);
+        record_file_event();
+    }
+}
+
+static __always_inline void record_file_path_extraction_error(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_path_extraction_errors, 1);
+    }
+}
+
+static __always_inline void record_file_sampling_skipped(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->file_sampling_skipped, 1);
+    }
+}
+
+// System call event statistics recording
+static __always_inline void record_syscall_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->syscall_events, 1);
+        __sync_fetch_and_add(&stats->events_processed, 1);
+    }
+}
+
+static __always_inline void record_syscall_enter_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->syscall_enter_events, 1);
+        record_syscall_event();
+    }
+}
+
+static __always_inline void record_syscall_exit_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->syscall_exit_events, 1);
+        record_syscall_event();
+    }
+}
+
+static __always_inline void record_syscall_filtered(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->syscall_filtered, 1);
+    }
+}
+
+static __always_inline void record_syscall_sampling_skipped(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->syscall_sampling_skipped, 1);
+    }
+}
+
 // Filtering statistics
 static __always_inline void record_sampling_skipped(void) {
     __u32 key = 0;
@@ -445,6 +869,143 @@ static __always_inline int get_config_value_safe(__u32 key, __u32 *value, __u32 
         return 0;
     }
     return ret;
+}
+
+// Performance monitoring helper functions
+static __always_inline void update_performance_metrics(__u64 processing_time_ns) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __u64 current_time = bpf_ktime_get_ns();
+        
+        // Update last event timestamp
+        stats->last_event_timestamp = current_time;
+        
+        // Update average processing time (simple moving average)
+        if (stats->avg_processing_time_ns == 0) {
+            stats->avg_processing_time_ns = (__u32)processing_time_ns;
+        } else {
+            // Weighted average: 90% old + 10% new
+            stats->avg_processing_time_ns = (stats->avg_processing_time_ns * 9 + (__u32)processing_time_ns) / 10;
+        }
+    }
+}
+
+static __always_inline void update_events_per_second_rate(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __u64 current_time = bpf_ktime_get_ns();
+        static __u64 last_rate_update = 0;
+        static __u64 events_in_window = 0;
+        
+        // Update rate every second (1 billion nanoseconds)
+        if (current_time - last_rate_update >= 1000000000ULL) {
+            stats->events_per_second = (__u32)events_in_window;
+            
+            // Update peak if current rate is higher
+            if (stats->events_per_second > stats->peak_events_per_second) {
+                stats->peak_events_per_second = stats->events_per_second;
+            }
+            
+            // Reset for next window
+            events_in_window = 0;
+            last_rate_update = current_time;
+        }
+        
+        events_in_window++;
+    }
+}
+
+static __always_inline void update_adaptive_sampling_stats(__u32 new_rate, int is_high_load) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        // Update current sampling rate if it changed
+        if (stats->current_sampling_rate != new_rate) {
+            stats->current_sampling_rate = new_rate;
+            __sync_fetch_and_add(&stats->sampling_adjustments, 1);
+        }
+        
+        // Track load periods
+        if (is_high_load) {
+            __sync_fetch_and_add(&stats->high_load_periods, 1);
+        } else {
+            __sync_fetch_and_add(&stats->low_load_periods, 1);
+        }
+    }
+}
+
+static __always_inline void update_memory_usage_stats(__u32 current_usage_kb) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        stats->current_memory_usage_kb = current_usage_kb;
+        
+        // Update peak memory usage if current is higher
+        if (current_usage_kb > stats->peak_memory_usage_kb) {
+            stats->peak_memory_usage_kb = current_usage_kb;
+        }
+    }
+}
+
+static __always_inline void update_ringbuf_utilization(__u32 utilization_percent) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        stats->ringbuf_utilization_percent = utilization_percent;
+    }
+}
+
+static __always_inline void update_concurrent_events_count(__u32 concurrent_count) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        // Update peak concurrent events if current is higher
+        if (concurrent_count > stats->max_concurrent_events) {
+            stats->max_concurrent_events = concurrent_count;
+        }
+    }
+}
+
+// Adaptive sampling helper functions
+static __always_inline __u32 get_adaptive_sampling_rate(__u32 base_rate, __u32 current_load) {
+    if (!is_adaptive_sampling_enabled()) {
+        return base_rate;
+    }
+    
+    // Simple adaptive algorithm: reduce sampling rate under high load
+    if (current_load > 80) {
+        // High load: reduce sampling to 25% of base rate
+        return base_rate / 4;
+    } else if (current_load > 60) {
+        // Medium load: reduce sampling to 50% of base rate
+        return base_rate / 2;
+    } else if (current_load > 40) {
+        // Moderate load: reduce sampling to 75% of base rate
+        return (base_rate * 3) / 4;
+    } else {
+        // Low load: use full sampling rate
+        return base_rate;
+    }
+}
+
+static __always_inline __u32 calculate_system_load_percent(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (!stats) {
+        return 0;
+    }
+    
+    // Simple load calculation based on events per second and ring buffer utilization
+    __u32 event_load = (stats->events_per_second > 1000) ? 
+                       ((stats->events_per_second - 1000) / 100) : 0;
+    __u32 buffer_load = stats->ringbuf_utilization_percent;
+    
+    // Combine both metrics (weighted average)
+    __u32 combined_load = (event_load * 3 + buffer_load * 7) / 10;
+    
+    return (combined_load > 100) ? 100 : combined_load;
 }
 
 
@@ -821,16 +1382,7 @@ static __always_inline void fill_network_info_from_recvmsg_ctx(
     // For example, message size could be stored in a custom field if needed
 }
 
-// Network event statistics recording
-static __always_inline void record_network_event(void) {
-    __u32 key = 0;
-    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
-    if (stats) {
-        __sync_fetch_and_add(&stats->events_processed, 1);
-        // Note: network_events field would need to be added to debug_stats structure
-        // This is a placeholder for the extended statistics structure
-    }
-}
+
 
 // File system event allocation and processing functions
 
@@ -1027,16 +1579,7 @@ static __always_inline int handle_file_info_error(void) {
     return 0;  // Skip this event
 }
 
-// File event statistics recording
-static __always_inline void record_file_event(void) {
-    __u32 key = 0;
-    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
-    if (stats) {
-        __sync_fetch_and_add(&stats->events_processed, 1);
-        // Note: file_events field would need to be added to debug_stats structure
-        // This is a placeholder for the extended statistics structure
-    }
-}
+
 
 // Unified file event processing helper
 static __always_inline int should_process_file_event(void) {
@@ -1253,27 +1796,9 @@ static __always_inline int handle_syscall_args_error(void) {
     return 1;  // Continue processing with partial data
 }
 
-// System call event statistics recording
-static __always_inline void record_syscall_event(void) {
-    __u32 key = 0;
-    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
-    if (stats) {
-        __sync_fetch_and_add(&stats->events_processed, 1);
-        // Note: syscall_events field would need to be added to debug_stats structure
-        // This is a placeholder for the extended statistics structure
-    }
-}
 
-// System call sampling statistics recording
-static __always_inline void record_syscall_sampling_skipped(void) {
-    __u32 key = 0;
-    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
-    if (stats) {
-        __sync_fetch_and_add(&stats->sampling_skipped, 1);
-        // Note: syscall_sampling_skipped field would need to be added to debug_stats structure
-        // This is a placeholder for the extended statistics structure
-    }
-}
+
+
 
 // Unified system call event processing helper
 static __always_inline int should_process_syscall_event(__u64 syscall_nr) {
