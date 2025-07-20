@@ -235,6 +235,19 @@ struct trace_event_raw_vfs_unlink {
     char __data[0];             // Variable length data area
 };
 
+// System call tracepoint context structures
+
+// System call enter tracepoint context
+struct trace_event_raw_sys_enter {
+    struct trace_entry ent;
+    __s64 id;                   // System call number
+    __u64 args[6];              // System call arguments
+    char __data[0];             // Variable length data area
+};
+
+// System call exit tracepoint context (already defined above for process exit)
+// struct trace_event_raw_sys_exit is already defined for process monitoring
+
 #endif /* USE_KPROBE_FALLBACK */
 
 // Debug and error statistics
@@ -1028,6 +1041,289 @@ static __always_inline void record_file_event(void) {
 // Unified file event processing helper
 static __always_inline int should_process_file_event(void) {
     return should_process_event(MONITOR_FILE);
+}
+
+// System call event allocation and processing functions
+
+// Basic system call event allocation
+static __always_inline struct syscall_event* allocate_syscall_event(__u32 event_type) {
+    struct syscall_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (!event) {
+        record_error(ERROR_ALLOCATION_FAILURE);
+        return NULL;
+    }
+    
+    fill_event_header(&event->header, event_type);
+    return event;
+}
+
+// Enhanced system call event allocation with retry logic
+static __always_inline struct syscall_event* allocate_syscall_event_with_retry(__u32 event_type) {
+    struct syscall_event *event;
+    
+    // First attempt
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // Record the allocation failure
+    record_error(ERROR_ALLOCATION_FAILURE);
+    
+    // Try once more with BPF_RB_FORCE_WAKEUP flag to wake up consumers
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), BPF_RB_FORCE_WAKEUP);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // If both attempts fail, return NULL
+    return NULL;
+}
+
+// System call filtering and sampling functions
+
+// System call whitelist - only monitor critical system calls
+static __always_inline int should_trace_syscall(__u64 syscall_nr) {
+    // Based on requirements 3.1 and 3.3, filter to critical system calls
+    switch (syscall_nr) {
+        case 2:    // sys_open
+        case 257:  // sys_openat
+        case 3:    // sys_close
+        case 1:    // sys_write
+        case 0:    // sys_read
+        case 59:   // sys_execve
+        case 322:  // sys_execveat
+        case 42:   // sys_connect
+        case 43:   // sys_accept
+        case 288:  // sys_accept4
+        case 10:   // sys_unlink
+        case 263:  // sys_unlinkat
+        case 83:   // sys_mkdir
+        case 84:   // sys_rmdir
+        case 82:   // sys_rename
+        case 316:  // sys_renameat2
+        case 49:   // sys_bind
+        case 50:   // sys_listen
+        case 41:   // sys_socket
+        case 85:   // sys_creat
+        case 5:    // sys_fstat
+        case 4:    // sys_stat
+        case 6:    // sys_lstat
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// System call sampling strategy - higher frequency calls get lower sampling rates
+static __always_inline int should_sample_syscall(__u64 syscall_nr) {
+    __u32 base_rate = 100;
+    get_config_value_safe(MONITOR_SAMPLING_RATE, &base_rate, 100);
+    
+    // Apply different sampling rates based on syscall frequency characteristics
+    __u32 adjusted_rate = base_rate;
+    
+    switch (syscall_nr) {
+        case 0:    // sys_read - very high frequency
+        case 1:    // sys_write - very high frequency
+            adjusted_rate = base_rate / 10;  // 10x lower sampling
+            break;
+        case 4:    // sys_stat - high frequency
+        case 5:    // sys_fstat - high frequency
+        case 6:    // sys_lstat - high frequency
+            adjusted_rate = base_rate / 5;   // 5x lower sampling
+            break;
+        case 2:    // sys_open - medium frequency
+        case 257:  // sys_openat - medium frequency
+        case 3:    // sys_close - medium frequency
+            adjusted_rate = base_rate / 2;   // 2x lower sampling
+            break;
+        default:
+            // Low frequency syscalls use full sampling rate
+            adjusted_rate = base_rate;
+            break;
+    }
+    
+    return should_sample(adjusted_rate);
+}
+
+// System call information extraction helper functions
+
+// Fill system call event information from sys_enter tracepoint context
+static __always_inline void fill_syscall_info_from_enter_ctx(
+    struct syscall_event *event,
+    struct trace_event_raw_sys_enter *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract system call number and arguments
+    event->syscall_nr = ctx->id;
+    event->ret = 0;  // Not available in enter context, will be filled by exit
+    
+    // Copy system call arguments with bounds checking
+    for (int i = 0; i < 6; i++) {
+        event->args[i] = ctx->args[i];
+    }
+}
+
+// Fill system call event information from sys_exit tracepoint context
+static __always_inline void fill_syscall_info_from_exit_ctx(
+    struct syscall_event *event,
+    struct trace_event_raw_sys_exit *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract system call number and return value
+    event->syscall_nr = ctx->id;
+    event->ret = ctx->ret;
+    
+    // Arguments are not available in exit context, clear them
+    for (int i = 0; i < 6; i++) {
+        event->args[i] = 0;
+    }
+}
+
+// Extract specific system call arguments based on syscall type
+static __always_inline void extract_syscall_args(
+    struct syscall_event *event,
+    __u64 syscall_nr,
+    __u64 args[6]) {
+    
+    if (!event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Copy all arguments first
+    for (int i = 0; i < 6; i++) {
+        event->args[i] = args[i];
+    }
+    
+    // For specific syscalls, we could extract and validate specific arguments
+    // This is a placeholder for more sophisticated argument processing
+    switch (syscall_nr) {
+        case 2:    // sys_open
+        case 257:  // sys_openat
+            // args[0] = dirfd (for openat), filename (for open)
+            // args[1] = filename (for openat), flags (for open)
+            // args[2] = flags (for openat), mode (for open)
+            // args[3] = mode (for openat)
+            break;
+        case 59:   // sys_execve
+            // args[0] = filename
+            // args[1] = argv
+            // args[2] = envp
+            break;
+        case 42:   // sys_connect
+            // args[0] = sockfd
+            // args[1] = addr
+            // args[2] = addrlen
+            break;
+        default:
+            // Generic argument handling - already copied above
+            break;
+    }
+}
+
+// System call error handling helpers
+
+// Handle system call filtering errors
+static __always_inline int handle_syscall_filter_error(void) {
+    record_error(ERROR_DATA_READ_ERROR);
+    
+    // For syscall filter errors, we should skip the event
+    // but continue processing other syscalls
+    return 0;  // Skip this syscall event
+}
+
+// Handle system call argument extraction errors
+static __always_inline int handle_syscall_args_error(void) {
+    record_error(ERROR_DATA_READ_ERROR);
+    
+    // For argument extraction errors, we can still process the event
+    // with partial information (syscall number and return value)
+    return 1;  // Continue processing with partial data
+}
+
+// System call event statistics recording
+static __always_inline void record_syscall_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->events_processed, 1);
+        // Note: syscall_events field would need to be added to debug_stats structure
+        // This is a placeholder for the extended statistics structure
+    }
+}
+
+// System call sampling statistics recording
+static __always_inline void record_syscall_sampling_skipped(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->sampling_skipped, 1);
+        // Note: syscall_sampling_skipped field would need to be added to debug_stats structure
+        // This is a placeholder for the extended statistics structure
+    }
+}
+
+// Unified system call event processing helper
+static __always_inline int should_process_syscall_event(__u64 syscall_nr) {
+    // First check if system call monitoring is enabled
+    if (!should_process_event(MONITOR_SYSCALL)) {
+        return 0;
+    }
+    
+    // Check if this specific syscall should be traced
+    if (!should_trace_syscall(syscall_nr)) {
+        return 0;
+    }
+    
+    // Apply syscall-specific sampling
+    if (!should_sample_syscall(syscall_nr)) {
+        record_syscall_sampling_skipped();
+        return 0;
+    }
+    
+    return 1;
+}
+
+// System call name resolution helper (for debugging and logging)
+static __always_inline const char* get_syscall_name(__u64 syscall_nr) {
+    switch (syscall_nr) {
+        case 0: return "read";
+        case 1: return "write";
+        case 2: return "open";
+        case 3: return "close";
+        case 4: return "stat";
+        case 5: return "fstat";
+        case 6: return "lstat";
+        case 10: return "unlink";
+        case 41: return "socket";
+        case 42: return "connect";
+        case 43: return "accept";
+        case 49: return "bind";
+        case 50: return "listen";
+        case 59: return "execve";
+        case 82: return "rename";
+        case 83: return "mkdir";
+        case 84: return "rmdir";
+        case 85: return "creat";
+        case 257: return "openat";
+        case 263: return "unlinkat";
+        case 288: return "accept4";
+        case 316: return "renameat2";
+        case 322: return "execveat";
+        default: return "unknown";
+    }
 }
 
 #endif /* USE_KPROBE_FALLBACK */
