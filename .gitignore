@@ -136,7 +136,9 @@ ENV/
 
 # eBPF
 *.bpf.o
+*.skel.h
 vmlinux.h
+agent/ebpf/build/
 
 # Performance profiles
 *.pprof

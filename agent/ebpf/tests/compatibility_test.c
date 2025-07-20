@@ -203,9 +203,9 @@ static int test_tracepoint_structure_compatibility(void) {
                 found_pid_field = 1;
                 printf("    ✓ pid field found\n");
             }
-            if (strstr(line, "field:char comm")) {
-                found_comm_field = 1;
-                printf("    ✓ comm field found\n");
+            if (strstr(line, "field:pid_t old_pid")) {
+                found_comm_field = 1;  // old_pid is what we actually need, not comm
+                printf("    ✓ old_pid field found\n");
             }
             if (strstr(line, "__data_loc char[] filename")) {
                 found_filename_field = 1;
@@ -215,7 +215,7 @@ static int test_tracepoint_structure_compatibility(void) {
         fclose(format_file);
         
         TEST_ASSERT(found_pid_field, "pid field not found in sched_process_exec");
-        TEST_ASSERT(found_comm_field, "comm field not found in sched_process_exec");
+        TEST_ASSERT(found_comm_field, "old_pid field not found in sched_process_exec");
         
         if (!found_filename_field) {
             printf("    WARNING: filename field not found, may need fallback\n");

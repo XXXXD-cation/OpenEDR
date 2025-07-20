@@ -11,10 +11,11 @@ INCLUDE_DIR := include
 BUILD_DIR := build
 VMLINUX_DIR := vmlinux
 
-# Version selection for process monitor
+# Process monitor version selection (V1 deprecated, V2 is default and recommended)
 PROCESS_MONITOR_VERSION ?= v2
 ifeq ($(PROCESS_MONITOR_VERSION),v1)
     PROCESS_MONITOR_SRC := $(SRC_DIR)/process_monitor.c
+    $(warning "Process monitor V1 contains deprecated kprobe implementations. Use V2 for production.")
 else
     PROCESS_MONITOR_SRC := $(SRC_DIR)/process_monitor_v2.c
 endif
@@ -190,8 +191,8 @@ help:
 	@echo "  help             - Show this help"
 	@echo ""
 	@echo "Version Selection:"
-	@echo "  PROCESS_MONITOR_VERSION=v1  - Use original kprobe-based implementation"
-	@echo "  PROCESS_MONITOR_VERSION=v2  - Use optimized tracepoint-based implementation (default)"
+	@echo "  PROCESS_MONITOR_VERSION=v1  - Use legacy kprobe-based implementation (DEPRECATED)"
+	@echo "  PROCESS_MONITOR_VERSION=v2  - Use optimized tracepoint-based implementation (RECOMMENDED)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                         - Build with v2 (default)"

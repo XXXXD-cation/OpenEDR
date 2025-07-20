@@ -564,91 +564,9 @@ func (m *EBPFManager) attachProcessProgramsV2() error {
 func (m *EBPFManager) attachProcessProgramsV1() error {
 	attached := 0
 
-	// Attach process exec kprobe (V1)
-	if prog, exists := m.programs["trace_sys_execve"]; exists {
-		l, err := link.Kprobe("sys_execve", prog, nil)
-		if err != nil {
-			// Try alternative syscall names
-			if l, err = link.Kprobe("__x64_sys_execve", prog, nil); err != nil {
-				return fmt.Errorf("failed to attach execve kprobe V1: %w", err)
-			}
-		}
-		m.links["trace_sys_execve"] = l
-		m.logger.Debug("Attached execve kprobe V1")
-		attached++
-	}
-
-	// Attach fallback kprobe programs if they exist
-	if prog, exists := m.programs["trace_sys_execve_fallback"]; exists {
-		l, err := link.Kprobe("sys_execve", prog, nil)
-		if err != nil {
-			if l, err = link.Kprobe("__x64_sys_execve", prog, nil); err != nil {
-				m.logger.Warn("Failed to attach execve fallback kprobe: %v", err)
-			} else {
-				m.links["trace_sys_execve_fallback"] = l
-				m.logger.Debug("Attached execve fallback kprobe")
-				attached++
-			}
-		} else {
-			m.links["trace_sys_execve_fallback"] = l
-			m.logger.Debug("Attached execve fallback kprobe")
-			attached++
-		}
-	}
-
-	// Attach process exit kprobe (V1)
-	if prog, exists := m.programs["trace_sys_exit"]; exists {
-		l, err := link.Kprobe("sys_exit", prog, nil)
-		if err != nil {
-			if l, err = link.Kprobe("__x64_sys_exit", prog, nil); err != nil {
-				m.logger.Warn("Failed to attach exit kprobe V1: %v", err)
-			} else {
-				m.links["trace_sys_exit"] = l
-				m.logger.Debug("Attached exit kprobe V1")
-				attached++
-			}
-		} else {
-			m.links["trace_sys_exit"] = l
-			m.logger.Debug("Attached exit kprobe V1")
-			attached++
-		}
-	}
-
-	// Attach fallback exit kprobe if it exists
-	if prog, exists := m.programs["trace_sys_exit_fallback"]; exists {
-		l, err := link.Kprobe("sys_exit", prog, nil)
-		if err != nil {
-			if l, err = link.Kprobe("__x64_sys_exit", prog, nil); err != nil {
-				m.logger.Warn("Failed to attach exit fallback kprobe: %v", err)
-			} else {
-				m.links["trace_sys_exit_fallback"] = l
-				m.logger.Debug("Attached exit fallback kprobe")
-				attached++
-			}
-		} else {
-			m.links["trace_sys_exit_fallback"] = l
-			m.logger.Debug("Attached exit fallback kprobe")
-			attached++
-		}
-	}
-
-	// Attach process exit_group kprobe (V1) - only if not using V2
-	if prog, exists := m.programs["trace_sys_exit_group"]; exists {
-		l, err := link.Kprobe("sys_exit_group", prog, nil)
-		if err != nil {
-			if l, err = link.Kprobe("__x64_sys_exit_group", prog, nil); err != nil {
-				m.logger.Warn("Failed to attach exit_group kprobe V1: %v", err)
-			} else {
-				m.links["trace_sys_exit_group"] = l
-				m.logger.Debug("Attached exit_group kprobe V1")
-				attached++
-			}
-		} else {
-			m.links["trace_sys_exit_group"] = l
-			m.logger.Debug("Attached exit_group kprobe V1")
-			attached++
-		}
-	}
+	// Note: Deprecated kprobe implementations have been removed from process_monitor.c
+	// Only the optimized tracepoint-based V2 implementation is now supported
+	m.logger.Info("V1 kprobe-based process monitoring has been deprecated and removed")
 
 	if attached == 0 {
 		return fmt.Errorf("no V1 process programs found or attached")

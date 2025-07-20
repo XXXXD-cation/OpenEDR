@@ -280,14 +280,13 @@ static __always_inline int should_sample(__u32 rate) {
 
 
 
-// New helper functions for tracepoint optimization
+// Optimized helper functions for tracepoint-based monitoring
 
-// Enhanced error recording helper with detailed tracking
+// Enhanced error recording with detailed tracking
 static __always_inline void record_error(__u32 error_type) {
     __u32 key = 0;
     struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
     if (stats) {
-        // Update error counters
         switch (error_type) {
             case ERROR_EVENT_DROPPED:
                 __sync_fetch_and_add(&stats->events_dropped, 1);
@@ -306,14 +305,13 @@ static __always_inline void record_error(__u32 error_type) {
                 break;
         }
         
-        // Update last error information for debugging
         stats->last_error_timestamp = bpf_ktime_get_ns();
         stats->last_error_type = error_type;
         stats->last_error_pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
     }
 }
 
-// Record specific event types for detailed statistics
+// Event-specific statistics recording
 static __always_inline void record_exec_event(void) {
     __u32 key = 0;
     struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
@@ -332,7 +330,7 @@ static __always_inline void record_exit_event(void) {
     }
 }
 
-// Record sampling and filtering statistics
+// Filtering statistics
 static __always_inline void record_sampling_skipped(void) {
     __u32 key = 0;
     struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
@@ -349,13 +347,13 @@ static __always_inline void record_pid_filtered(void) {
     }
 }
 
-// Safe configuration getter with fallback values
+// Safe configuration access with fallback
 static __always_inline int get_config_value_safe(__u32 key, __u32 *value, __u32 fallback) {
     int ret = get_config_value(key, value);
     if (ret < 0) {
         record_error(ERROR_CONFIG_ERROR);
         *value = fallback;
-        return 0;  // Return success with fallback value
+        return 0;
     }
     return ret;
 }
@@ -433,7 +431,7 @@ static __always_inline int should_process_event(__u32 monitor_type) {
     return 1;
 }
 
-// Safe event allocation and initialization
+// Basic event allocation (use allocate_process_event_with_retry for production)
 static __always_inline struct process_event* allocate_process_event(__u32 event_type) {
     struct process_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
     if (!event) {
@@ -441,9 +439,7 @@ static __always_inline struct process_event* allocate_process_event(__u32 event_
         return NULL;
     }
     
-    // Initialize event header
     fill_event_header(&event->header, event_type);
-    
     return event;
 }
 
