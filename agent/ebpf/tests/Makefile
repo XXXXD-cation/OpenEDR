@@ -10,16 +10,18 @@ PERFORMANCE_TARGET := performance_test
 COMPATIBILITY_TARGET := compatibility_test
 PRODUCTION_TARGET := production_validation_test
 FILE_TYPE_FILTERING_TARGET := file_type_filtering_test
+FILE_MONITOR_UNIT_TARGET := file_monitor_unit_test
 UNIT_SOURCE := unit_test.c
 INTEGRATION_SOURCE := integration_test.c
 PERFORMANCE_SOURCE := performance_test.c
 COMPATIBILITY_SOURCE := compatibility_test.c
 PRODUCTION_SOURCE := production_validation_test.c
 FILE_TYPE_FILTERING_SOURCE := file_type_filtering_test.c
+FILE_MONITOR_UNIT_SOURCE := file_monitor_unit_test.c
 
 .PHONY: all clean test unit-test integration-test performance-test compatibility-test production-validation-test run help
 
-all: $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET)
+all: $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET) $(FILE_MONITOR_UNIT_TARGET)
 
 $(UNIT_TARGET): $(UNIT_SOURCE)
 	@echo "Compiling unit tests..."
@@ -50,6 +52,11 @@ $(FILE_TYPE_FILTERING_TARGET): $(FILE_TYPE_FILTERING_SOURCE)
 	@echo "Compiling file type filtering tests..."
 	$(CC) $(CFLAGS) $(INCLUDES) -o $(FILE_TYPE_FILTERING_TARGET) $(FILE_TYPE_FILTERING_SOURCE)
 	@echo "File type filtering tests compiled successfully"
+
+$(FILE_MONITOR_UNIT_TARGET): $(FILE_MONITOR_UNIT_SOURCE)
+	@echo "Compiling file monitor unit tests..."
+	$(CC) $(CFLAGS) $(INCLUDES) -o $(FILE_MONITOR_UNIT_TARGET) $(FILE_MONITOR_UNIT_SOURCE)
+	@echo "File monitor unit tests compiled successfully"
 
 unit-test: $(UNIT_TARGET)
 	@echo "Running eBPF unit tests..."
@@ -86,13 +93,18 @@ file-type-filtering-test: $(FILE_TYPE_FILTERING_TARGET)
 	@echo "===================================="
 	./$(FILE_TYPE_FILTERING_TARGET)
 
-test: unit-test integration-test performance-test compatibility-test production-validation-test file-type-filtering-test
+file-monitor-unit-test: $(FILE_MONITOR_UNIT_TARGET)
+	@echo "Running file monitor unit tests..."
+	@echo "=================================="
+	./$(FILE_MONITOR_UNIT_TARGET)
+
+test: unit-test integration-test performance-test compatibility-test production-validation-test file-type-filtering-test file-monitor-unit-test
 
 run: test
 
 clean:
 	@echo "Cleaning up..."
-	rm -f $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET)
+	rm -f $(UNIT_TARGET) $(INTEGRATION_TARGET) $(PERFORMANCE_TARGET) $(COMPATIBILITY_TARGET) $(PRODUCTION_TARGET) $(FILE_TYPE_FILTERING_TARGET) $(FILE_MONITOR_UNIT_TARGET)
 	@echo "Clean complete"
 
 help:
@@ -108,6 +120,7 @@ help:
 	@echo "  production-validation-test - Build and run production validation tests (quick)"
 	@echo "  production-validation-long - Build and run long-term production validation tests"
 	@echo "  file-type-filtering-test   - Build and run file type filtering tests"
+	@echo "  file-monitor-unit-test     - Build and run file monitor unit tests"
 	@echo "  test                       - Build and run all tests"
 	@echo "  run                        - Alias for test"
 	@echo "  clean                      - Remove build artifacts"
