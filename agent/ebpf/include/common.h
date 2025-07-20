@@ -27,6 +27,14 @@ typedef __u64 size_t;
 #define AF_INET6 10
 #endif
 
+#ifndef IPPROTO_TCP
+#define IPPROTO_TCP 6
+#endif
+
+#ifndef IPPROTO_UDP
+#define IPPROTO_UDP 17
+#endif
+
 // Basic socket address structure
 struct sockaddr {
     __u16 sa_family;
@@ -156,6 +164,74 @@ struct trace_event_raw_sys_exit {
     struct trace_entry ent;
     __s64 id;                   // System call ID
     __s64 ret;                  // Return value/exit code
+    char __data[0];             // Variable length data area
+};
+
+// Network monitoring tracepoint context structures
+
+// TCP socket state change tracepoint context
+struct trace_event_raw_inet_sock_set_state {
+    struct trace_entry ent;
+    const void *skaddr;         // Socket address
+    __s32 oldstate;             // Previous socket state
+    __s32 newstate;             // New socket state
+    __u16 sport;                // Source port
+    __u16 dport;                // Destination port
+    __u16 family;               // Address family (AF_INET/AF_INET6)
+    __u16 protocol;             // Protocol (IPPROTO_TCP/UDP)
+    __u8 saddr[4];              // Source address (IPv4)
+    __u8 daddr[4];              // Destination address (IPv4)
+    __u8 saddr_v6[16];          // Source address (IPv6)
+    __u8 daddr_v6[16];          // Destination address (IPv6)
+    char __data[0];             // Variable length data area
+};
+
+// Socket send message tracepoint context
+struct trace_event_raw_sock_sendmsg {
+    struct trace_entry ent;
+    const void *sk;             // Socket pointer
+    __u32 size;                 // Message size
+    __s32 ret;                  // Return value
+    char __data[0];             // Variable length data area
+};
+
+// Socket receive message tracepoint context
+struct trace_event_raw_sock_recvmsg {
+    struct trace_entry ent;
+    const void *sk;             // Socket pointer
+    __u32 size;                 // Message size
+    __s32 ret;                  // Return value
+    char __data[0];             // Variable length data area
+};
+
+// File system monitoring tracepoint context structures
+
+// VFS file open tracepoint context
+struct trace_event_raw_vfs_open {
+    struct trace_entry ent;
+    __u32 __data_loc_filename;  // Offset to filename in __data
+    __u32 flags;                // File open flags
+    __u16 mode;                 // File mode
+    __s32 ret;                  // Return value (file descriptor)
+    char __data[0];             // Variable length data area
+};
+
+// VFS file write tracepoint context
+struct trace_event_raw_vfs_write {
+    struct trace_entry ent;
+    __u32 __data_loc_filename;  // Offset to filename in __data
+    __u64 offset;               // File offset
+    __u64 count;                // Number of bytes to write
+    __s64 ret;                  // Return value (bytes written)
+    char __data[0];             // Variable length data area
+};
+
+// VFS file unlink tracepoint context
+struct trace_event_raw_vfs_unlink {
+    struct trace_entry ent;
+    __u32 __data_loc_filename;  // Offset to filename in __data
+    __u32 __data_loc_pathname;  // Offset to full pathname in __data
+    __s32 ret;                  // Return value
     char __data[0];             // Variable length data area
 };
 
@@ -548,6 +624,410 @@ static __always_inline struct process_event* allocate_process_event_with_retry(_
     
     // If both attempts fail, return NULL
     return NULL;
+}
+
+// Network event allocation and processing functions
+
+// Basic network event allocation
+static __always_inline struct network_event* allocate_network_event(__u32 event_type) {
+    struct network_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (!event) {
+        record_error(ERROR_ALLOCATION_FAILURE);
+        return NULL;
+    }
+    
+    fill_event_header(&event->header, event_type);
+    return event;
+}
+
+// Enhanced network event allocation with retry logic
+static __always_inline struct network_event* allocate_network_event_with_retry(__u32 event_type) {
+    struct network_event *event;
+    
+    // First attempt
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // Record the allocation failure
+    record_error(ERROR_ALLOCATION_FAILURE);
+    
+    // Try once more with BPF_RB_FORCE_WAKEUP flag to wake up consumers
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), BPF_RB_FORCE_WAKEUP);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // If both attempts fail, return NULL
+    return NULL;
+}
+
+// Network information extraction helper functions
+
+// Extract IPv4 address and port information from tracepoint context
+static __always_inline void extract_ipv4_info_from_ctx(
+    struct network_event *event,
+    struct trace_event_raw_inet_sock_set_state *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Set address family and protocol
+    event->family = ctx->family;
+    event->protocol = ctx->protocol;
+    
+    // Extract ports
+    event->sport = ctx->sport;
+    event->dport = ctx->dport;
+    
+    // Extract IPv4 addresses
+    if (ctx->family == AF_INET) {
+        // Copy IPv4 addresses from tracepoint context
+        __builtin_memcpy(&event->saddr_v4, ctx->saddr, 4);
+        __builtin_memcpy(&event->daddr_v4, ctx->daddr, 4);
+    }
+}
+
+// Extract IPv6 address and port information from tracepoint context
+static __always_inline void extract_ipv6_info_from_ctx(
+    struct network_event *event,
+    struct trace_event_raw_inet_sock_set_state *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Set address family and protocol
+    event->family = ctx->family;
+    event->protocol = ctx->protocol;
+    
+    // Extract ports
+    event->sport = ctx->sport;
+    event->dport = ctx->dport;
+    
+    // Extract IPv6 addresses
+    if (ctx->family == AF_INET6) {
+        // Copy IPv6 addresses from tracepoint context
+        __builtin_memcpy(event->saddr_v6, ctx->saddr_v6, 16);
+        __builtin_memcpy(event->daddr_v6, ctx->daddr_v6, 16);
+    }
+}
+
+// Fill network event information from inet_sock_set_state tracepoint context
+static __always_inline void fill_network_info_from_state_ctx(
+    struct network_event *event,
+    struct trace_event_raw_inet_sock_set_state *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Determine address family and extract appropriate information
+    if (ctx->family == AF_INET) {
+        extract_ipv4_info_from_ctx(event, ctx);
+    } else if (ctx->family == AF_INET6) {
+        extract_ipv6_info_from_ctx(event, ctx);
+    } else {
+        // Unknown address family, record error but continue
+        handle_data_read_error();
+        event->family = ctx->family;
+        event->protocol = ctx->protocol;
+        event->sport = ctx->sport;
+        event->dport = ctx->dport;
+    }
+}
+
+// Extract basic socket information from sock_sendmsg/sock_recvmsg tracepoint context
+static __always_inline int extract_socket_info_from_sk(
+    struct network_event *event,
+    const void *sk_ptr) {
+    
+    if (!sk_ptr || !event) {
+        handle_tracepoint_error();
+        return -1;
+    }
+    
+    // Note: Direct socket structure access requires careful kernel version handling
+    // For now, we'll set basic defaults and rely on other tracepoints for detailed info
+    // In a full implementation, this would use bpf_probe_read_kernel to safely read
+    // socket structure fields based on kernel version compatibility
+    
+    // Set default values - actual implementation would read from socket structure
+    event->family = AF_INET;  // Default assumption
+    event->protocol = 6;      // TCP default
+    event->sport = 0;         // Unknown
+    event->dport = 0;         // Unknown
+    event->saddr_v4 = 0;      // Unknown
+    event->daddr_v4 = 0;      // Unknown
+    
+    return 0;
+}
+
+// Fill network event information from sock_sendmsg tracepoint context
+static __always_inline void fill_network_info_from_sendmsg_ctx(
+    struct network_event *event,
+    struct trace_event_raw_sock_sendmsg *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract socket information
+    if (extract_socket_info_from_sk(event, ctx->sk) < 0) {
+        handle_data_read_error();
+    }
+    
+    // Additional context-specific information could be extracted here
+    // For example, message size could be stored in a custom field if needed
+}
+
+// Fill network event information from sock_recvmsg tracepoint context
+static __always_inline void fill_network_info_from_recvmsg_ctx(
+    struct network_event *event,
+    struct trace_event_raw_sock_recvmsg *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract socket information
+    if (extract_socket_info_from_sk(event, ctx->sk) < 0) {
+        handle_data_read_error();
+    }
+    
+    // Additional context-specific information could be extracted here
+    // For example, message size could be stored in a custom field if needed
+}
+
+// Network event statistics recording
+static __always_inline void record_network_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->events_processed, 1);
+        // Note: network_events field would need to be added to debug_stats structure
+        // This is a placeholder for the extended statistics structure
+    }
+}
+
+// File system event allocation and processing functions
+
+// Basic file event allocation
+static __always_inline struct file_event* allocate_file_event(__u32 event_type) {
+    struct file_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (!event) {
+        record_error(ERROR_ALLOCATION_FAILURE);
+        return NULL;
+    }
+    
+    fill_event_header(&event->header, event_type);
+    return event;
+}
+
+// Enhanced file event allocation with retry logic
+static __always_inline struct file_event* allocate_file_event_with_retry(__u32 event_type) {
+    struct file_event *event;
+    
+    // First attempt
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // Record the allocation failure
+    record_error(ERROR_ALLOCATION_FAILURE);
+    
+    // Try once more with BPF_RB_FORCE_WAKEUP flag to wake up consumers
+    event = bpf_ringbuf_reserve(&events, sizeof(*event), BPF_RB_FORCE_WAKEUP);
+    if (event) {
+        fill_event_header(&event->header, event_type);
+        return event;
+    }
+    
+    // If both attempts fail, return NULL
+    return NULL;
+}
+
+// File path extraction helper functions
+
+// Extract filename from VFS tracepoint context using __data_loc_filename
+static __always_inline int extract_filename_from_vfs_ctx(
+    void *ctx_base,
+    __u32 data_loc_filename,
+    char *filename,
+    size_t size) {
+    
+    // Get filename offset from __data_loc_filename
+    __u32 offset = data_loc_filename & 0xFFFF;
+    
+    // Validate offset to prevent out-of-bounds access
+    if (offset > 4096) {  // Reasonable upper bound
+        record_error(ERROR_DATA_READ_ERROR);
+        return -1;
+    }
+    
+    // Read filename from __data area using kernel-safe read
+    int ret = bpf_probe_read_kernel_str(filename, size, (char *)ctx_base + offset);
+    if (ret < 0) {
+        record_error(ERROR_DATA_READ_ERROR);
+        return ret;
+    }
+    
+    return 0;
+}
+
+// Extract pathname from VFS tracepoint context using __data_loc_pathname
+static __always_inline int extract_pathname_from_vfs_ctx(
+    void *ctx_base,
+    __u32 data_loc_pathname,
+    char *pathname,
+    size_t size) {
+    
+    // Get pathname offset from __data_loc_pathname
+    __u32 offset = data_loc_pathname & 0xFFFF;
+    
+    // Validate offset to prevent out-of-bounds access
+    if (offset > 4096) {  // Reasonable upper bound
+        record_error(ERROR_DATA_READ_ERROR);
+        return -1;
+    }
+    
+    // Read pathname from __data area using kernel-safe read
+    int ret = bpf_probe_read_kernel_str(pathname, size, (char *)ctx_base + offset);
+    if (ret < 0) {
+        record_error(ERROR_DATA_READ_ERROR);
+        return ret;
+    }
+    
+    return 0;
+}
+
+// Fill file event information from vfs_open tracepoint context
+static __always_inline void fill_file_info_from_open_ctx(
+    struct file_event *event,
+    struct trace_event_raw_vfs_open *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract file open flags and mode
+    event->flags = ctx->flags;
+    event->mode = ctx->mode;
+    event->fd = ctx->ret;  // File descriptor from return value
+    event->size = 0;       // Not applicable for open events
+    event->offset = 0;     // Not applicable for open events
+    
+    // Extract filename from tracepoint context with error handling
+    if (extract_filename_from_vfs_ctx(ctx, ctx->__data_loc_filename, 
+                                      event->filename, sizeof(event->filename)) < 0) {
+        // On error, clear filename and record the error
+        __builtin_memset(event->filename, 0, sizeof(event->filename));
+        handle_data_read_error();
+    }
+}
+
+// Fill file event information from vfs_write tracepoint context
+static __always_inline void fill_file_info_from_write_ctx(
+    struct file_event *event,
+    struct trace_event_raw_vfs_write *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract write-specific information
+    event->flags = 0;           // Not available in write context
+    event->mode = 0;            // Not available in write context
+    event->fd = -1;             // Not directly available
+    event->size = ctx->count;   // Number of bytes to write
+    event->offset = ctx->offset; // File offset
+    
+    // Extract filename from tracepoint context with error handling
+    if (extract_filename_from_vfs_ctx(ctx, ctx->__data_loc_filename,
+                                      event->filename, sizeof(event->filename)) < 0) {
+        // On error, clear filename and record the error
+        __builtin_memset(event->filename, 0, sizeof(event->filename));
+        handle_data_read_error();
+    }
+}
+
+// Fill file event information from vfs_unlink tracepoint context
+static __always_inline void fill_file_info_from_unlink_ctx(
+    struct file_event *event,
+    struct trace_event_raw_vfs_unlink *ctx) {
+    
+    if (!ctx || !event) {
+        handle_tracepoint_error();
+        return;
+    }
+    
+    // Extract unlink-specific information
+    event->flags = 0;      // Not applicable for unlink events
+    event->mode = 0;       // Not applicable for unlink events
+    event->fd = -1;        // Not applicable for unlink events
+    event->size = 0;       // Not applicable for unlink events
+    event->offset = 0;     // Not applicable for unlink events
+    
+    // Try to extract pathname first (more complete path), fallback to filename
+    if (extract_pathname_from_vfs_ctx(ctx, ctx->__data_loc_pathname,
+                                      event->filename, sizeof(event->filename)) < 0) {
+        // Fallback to filename if pathname extraction fails
+        if (extract_filename_from_vfs_ctx(ctx, ctx->__data_loc_filename,
+                                          event->filename, sizeof(event->filename)) < 0) {
+            // On error, clear filename and record the error
+            __builtin_memset(event->filename, 0, sizeof(event->filename));
+            handle_data_read_error();
+        }
+    }
+}
+
+// File event error handling helpers
+
+// Handle file path extraction errors
+static __always_inline int handle_file_path_error(void) {
+    record_error(ERROR_DATA_READ_ERROR);
+    
+    // For file path errors, we can continue processing the event
+    // with partial information (other fields may still be valid)
+    return 1;  // Continue processing with partial data
+}
+
+// Handle file information read errors
+static __always_inline int handle_file_info_error(void) {
+    record_error(ERROR_DATA_READ_ERROR);
+    
+    // For file info errors, we should skip the event
+    // as the core information is likely corrupted
+    return 0;  // Skip this event
+}
+
+// File event statistics recording
+static __always_inline void record_file_event(void) {
+    __u32 key = 0;
+    struct debug_stats *stats = bpf_map_lookup_elem(&debug_stats_map, &key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->events_processed, 1);
+        // Note: file_events field would need to be added to debug_stats structure
+        // This is a placeholder for the extended statistics structure
+    }
+}
+
+// Unified file event processing helper
+static __always_inline int should_process_file_event(void) {
+    return should_process_event(MONITOR_FILE);
 }
 
 #endif /* USE_KPROBE_FALLBACK */
