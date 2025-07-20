@@ -9,75 +9,7 @@
 
 #ifndef USE_KPROBE_FALLBACK
 
-// Enhanced file path extraction function with comprehensive error handling
-static __always_inline int extract_file_path(char *dest, __u32 dest_size, 
-                                            char *data, __u32 offset) {
-    if (!dest || dest_size == 0) {
-        record_file_path_extraction_error();
-        return -1;
-    }
-    
-    // Initialize destination buffer
-    dest[0] = '\0';
-    
-    if (!data) {
-        record_file_path_extraction_error();
-        // Set fallback value for null data
-        if (dest_size > 9) {
-            __builtin_memcpy(dest, "<no-data>", 10);
-        }
-        return -1;
-    }
-    
-    if (offset == 0) {
-        record_file_path_extraction_error();
-        // Set fallback value for zero offset
-        if (dest_size > 11) {
-            __builtin_memcpy(dest, "<no-offset>", 12);
-        }
-        return -1;
-    }
-    
-    // Get configured maximum path length
-    __u32 max_path_len = 0;
-    if (get_max_file_path_len(&max_path_len) < 0) {
-        max_path_len = MAX_PATH_LEN;
-    }
-    
-    // Use the smaller of dest_size-1 and max_path_len to avoid buffer overflows
-    __u32 copy_len = dest_size - 1; // Leave space for null terminator
-    if (copy_len > max_path_len) {
-        copy_len = max_path_len;
-    }
-    
-    // Ensure minimum buffer size for meaningful paths
-    if (copy_len < 2) {
-        record_file_path_extraction_error();
-        return -1;
-    }
-    
-    // Extract filename from variable data area with bounds checking
-    int ret = bpf_probe_read_kernel_str(dest, copy_len, data + offset);
-    if (ret < 0) {
-        record_file_path_extraction_error();
-        // Set a fallback value based on error type
-        if (dest_size > 9) {
-            __builtin_memcpy(dest, "<unknown>", 10);
-        }
-        return -1;
-    }
-    
-    // Validate extracted path is not empty
-    if (dest[0] == '\0') {
-        record_file_path_extraction_error();
-        if (dest_size > 7) {
-            __builtin_memcpy(dest, "<empty>", 8);
-        }
-        return -1;
-    }
-    
-    return 0;
-}
+// extract_file_path function is now defined in file.h
 
 // Extract file operation flags with validation and normalization
 static __always_inline __u32 extract_file_flags(__u32 raw_flags) {

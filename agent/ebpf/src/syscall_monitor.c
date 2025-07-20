@@ -36,34 +36,7 @@ static __always_inline int extract_syscall_retval(struct syscall_event *event,
     return 0;
 }
 
-// System call number validation helper
-static __always_inline int validate_syscall_number(__u64 syscall_nr) {
-    // Basic validation - syscall numbers should be reasonable
-    // Most Linux syscalls are in the range 0-400
-    if (syscall_nr > 1000) {
-        record_error(ERROR_DATA_READ_ERROR);
-        return 0; // Invalid syscall number
-    }
-    
-    return 1; // Valid syscall number
-}
-
-// System call event validation function
-static __always_inline int validate_syscall_event(struct syscall_event *event) {
-    if (!event) {
-        return 0; // Invalid event structure
-    }
-    
-    // Validate syscall number is reasonable
-    if (!validate_syscall_number(event->syscall_nr)) {
-        return 0; // Invalid syscall number
-    }
-    
-    // Additional validation could be added here for specific syscalls
-    // For now, we accept all valid syscall numbers
-    
-    return 1; // Event is valid
-}
+// validate_syscall_number and validate_syscall_event functions are now defined in syscall.h
 
 // System call error handling function
 static __always_inline int handle_syscall_error(__u32 error_type, struct syscall_event *event) {
