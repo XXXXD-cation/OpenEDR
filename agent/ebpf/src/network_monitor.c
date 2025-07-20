@@ -1,167 +1,115 @@
 #include "common.h"
 
-// Simple kprobe for sys_connect
-SEC("kprobe/sys_connect")
-int trace_sys_connect(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-    
-    // Check if we should trace this PID
-    if (!should_trace_pid(pid)) {
+// OpenEDR Network Monitor - Tracepoint-based Implementation
+//
+// This module implements network monitoring using stable kernel tracepoints
+// for TCP connection state changes and network data transmission events.
+// It integrates with the unified event processing framework established
+// in the process monitor implementation.
+
+#ifndef USE_KPROBE_FALLBACK
+
+// TCP connection state monitoring using inet_sock_set_state tracepoint
+// This tracepoint is triggered when TCP socket state changes occur
+SEC("tp/sock/inet_sock_set_state")
+int trace_inet_sock_state(struct trace_event_raw_inet_sock_set_state *ctx) {
+    // Check if we should process this network event based on configuration
+    // This includes checking if network monitoring is enabled, protocol filtering,
+    // IPv6 support, and applying sampling rates
+    if (!should_process_network_event(ctx->family, ctx->protocol)) {
         return 0;
     }
     
-    // Check if network monitoring is enabled
-    __u32 enabled = 0;
-    if (get_config_value(1, &enabled) < 0 || !enabled) {
+    // Only process TCP protocol events for connection tracking
+    // UDP events are handled separately as they are connectionless
+    if (ctx->protocol != IPPROTO_TCP) {
         return 0;
     }
     
-    // Check sampling rate
-    __u32 rate = 100;
-    get_config_value(4, &rate);
-    if (!should_sample(rate)) {
+    // Determine event type based on socket state transition
+    // TCP states: ESTABLISHED=1, SYN_SENT=2, SYN_RECV=3, LISTEN=10
+    // We focus on transitions to ESTABLISHED state to capture connections
+    __u32 event_type;
+    
+    if (ctx->newstate == 1) {  // TCP_ESTABLISHED
+        if (ctx->oldstate == 2) {  // SYN_SENT -> ESTABLISHED (outbound connection)
+            event_type = EVENT_NETWORK_CONNECT;
+        } else if (ctx->oldstate == 3) {  // SYN_RECV -> ESTABLISHED (inbound connection)
+            event_type = EVENT_NETWORK_ACCEPT;
+        } else {
+            // Other transitions to ESTABLISHED, treat as connect
+            // This handles edge cases and ensures we don't miss connections
+            event_type = EVENT_NETWORK_CONNECT;
+        }
+    } else {
+        // Skip other state transitions (CLOSE, FIN_WAIT, etc.)
+        // These could be added in future for connection termination tracking
         return 0;
     }
     
-    // Get syscall arguments
-    struct sockaddr *addr = (struct sockaddr *)PT_REGS_PARM2(ctx);
-    int addrlen = (int)PT_REGS_PARM3(ctx);
-    
-    if (!addr || addrlen < sizeof(struct sockaddr)) {
-        return 0;
-    }
-    
-    // Reserve space in ring buffer
-    struct network_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+    // Allocate network event with retry logic
+    // Uses the unified allocation framework with fallback retry
+    struct network_event *event = allocate_network_event_with_retry(event_type);
     if (!event) {
+        return handle_allocation_failure();
+    }
+    
+    // Fill network information from tracepoint context with error handling
+    // This extracts addresses, ports, and protocol information
+    if (!fill_network_info_from_inet_sock_state(event, ctx)) {
+        // Network information extraction failed, discard the event
+        bpf_ringbuf_discard(event, 0);
         return 0;
     }
     
-    // Fill event header
-    fill_event_header(&event->header, EVENT_NETWORK_CONNECT);
-    
-    // Read address family
-    __u16 family;
-    bpf_probe_read_user(&family, sizeof(family), &addr->sa_family);
-    
-    event->family = family;
-    event->protocol = 6; // TCP (simplified assumption)
-    event->sport = 0;    // Source port not easily available at syscall level
-    event->dport = 0;    // Will try to extract if possible
-    
-    // Try to extract destination info based on family
-    if (family == AF_INET) {
-        struct sockaddr_in addr_in;
-        if (addrlen >= sizeof(addr_in)) {
-            bpf_probe_read_user(&addr_in, sizeof(addr_in), addr);
-            event->daddr_v4 = addr_in.sin_addr.s_addr;
-            event->dport = __builtin_bswap16(addr_in.sin_port);
-        }
-    } else if (family == AF_INET6) {
-        struct sockaddr_in6 addr_in6;
-        if (addrlen >= sizeof(addr_in6)) {
-            bpf_probe_read_user(&addr_in6, sizeof(addr_in6), addr);
-            __builtin_memcpy(&event->daddr_v6, &addr_in6.sin6_addr, 16);
-            event->dport = __builtin_bswap16(addr_in6.sin6_port);
-        }
+    // Record event statistics for monitoring and debugging
+    if (event_type == EVENT_NETWORK_CONNECT) {
+        record_network_connect_event();
+    } else {
+        record_network_accept_event();
     }
     
-    // Submit event
+    // Record protocol and family statistics
+    record_network_protocol_event(ctx->protocol);
+    record_network_family_event(ctx->family);
+    
+    // Submit event to ring buffer for user space processing
     bpf_ringbuf_submit(event, 0);
     
     return 0;
 }
 
-// Simple kprobe for sys_accept
-SEC("kprobe/sys_accept")
-int trace_sys_accept(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+// Network data transmission monitoring using sock_sendmsg tracepoint
+SEC("tp/sock/sock_sendmsg")
+int trace_sock_sendmsg(struct trace_event_raw_sock_sendmsg *ctx) {
+    // For now, we only track connection events, not data transmission
+    // This tracepoint is available for future enhancement to monitor
+    // data flow patterns and volumes
     
-    // Check if we should trace this PID
-    if (!should_trace_pid(pid)) {
-        return 0;
-    }
-    
-    // Check if network monitoring is enabled
-    __u32 enabled = 0;
-    if (get_config_value(1, &enabled) < 0 || !enabled) {
-        return 0;
-    }
-    
-    // Check sampling rate
-    __u32 rate = 100;
-    get_config_value(4, &rate);
-    if (!should_sample(rate)) {
-        return 0;
-    }
-    
-    // Reserve space in ring buffer
-    struct network_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
-    if (!event) {
-        return 0;
-    }
-    
-    // Fill event header
-    fill_event_header(&event->header, EVENT_NETWORK_ACCEPT);
-    
-    // For accept, we have limited info at syscall entry
-    event->family = AF_INET;  // Assume IPv4 for simplicity
-    event->protocol = 6;      // TCP
-    event->sport = 0;         // Not available at syscall level
-    event->dport = 0;         // Not available at syscall level
-    event->saddr_v4 = 0;      // Not available at syscall level
-    event->daddr_v4 = 0;      // Not available at syscall level
-    
-    // Submit event
-    bpf_ringbuf_submit(event, 0);
+    // Record sendmsg event for statistics
+    record_network_sendmsg_event();
     
     return 0;
 }
 
-// Simple kprobe for sys_accept4
-SEC("kprobe/sys_accept4")
-int trace_sys_accept4(struct pt_regs *ctx) {
-    __u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+// Network data reception monitoring using sock_recvmsg tracepoint
+SEC("tp/sock/sock_recvmsg")
+int trace_sock_recvmsg(struct trace_event_raw_sock_recvmsg *ctx) {
+    // For now, we only track connection events, not data transmission
+    // This tracepoint is available for future enhancement to monitor
+    // data flow patterns and volumes
     
-    // Check if we should trace this PID
-    if (!should_trace_pid(pid)) {
-        return 0;
-    }
-    
-    // Check if network monitoring is enabled
-    __u32 enabled = 0;
-    if (get_config_value(1, &enabled) < 0 || !enabled) {
-        return 0;
-    }
-    
-    // Check sampling rate
-    __u32 rate = 100;
-    get_config_value(4, &rate);
-    if (!should_sample(rate)) {
-        return 0;
-    }
-    
-    // Reserve space in ring buffer
-    struct network_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
-    if (!event) {
-        return 0;
-    }
-    
-    // Fill event header
-    fill_event_header(&event->header, EVENT_NETWORK_ACCEPT);
-    
-    // For accept4, similar to accept
-    event->family = AF_INET;  // Assume IPv4 for simplicity
-    event->protocol = 6;      // TCP
-    event->sport = 0;         // Not available at syscall level
-    event->dport = 0;         // Not available at syscall level
-    event->saddr_v4 = 0;      // Not available at syscall level
-    event->daddr_v4 = 0;      // Not available at syscall level
-    
-    // Submit event
-    bpf_ringbuf_submit(event, 0);
+    // Record recvmsg event for statistics
+    record_network_recvmsg_event();
     
     return 0;
 }
+
+#else
+
+// Fallback implementations for older kernels would go here
+// For now, network monitoring requires modern tracepoint support
+
+#endif /* USE_KPROBE_FALLBACK */
 
 char _license[] SEC("license") = "GPL";

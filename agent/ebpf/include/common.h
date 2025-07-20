@@ -35,6 +35,34 @@ typedef __u64 size_t;
 #define IPPROTO_UDP 17
 #endif
 
+#ifndef IPPROTO_ICMP
+#define IPPROTO_ICMP 1
+#endif
+
+#ifndef IPPROTO_ICMPV6
+#define IPPROTO_ICMPV6 58
+#endif
+
+// Network byte order conversion helpers (eBPF doesn't have standard ntohl/htonl)
+static __always_inline __u32 bpf_ntohl(__u32 netlong) {
+    return ((__u32)(netlong) << 24) | 
+           (((__u32)(netlong) << 8) & 0x00FF0000) |
+           (((__u32)(netlong) >> 8) & 0x0000FF00) |
+           ((__u32)(netlong) >> 24);
+}
+
+static __always_inline __u16 bpf_ntohs(__u16 netshort) {
+    return ((__u16)(netshort) << 8) | ((__u16)(netshort) >> 8);
+}
+
+static __always_inline __u32 bpf_htonl(__u32 hostlong) {
+    return bpf_ntohl(hostlong); // Same operation for conversion both ways
+}
+
+static __always_inline __u16 bpf_htons(__u16 hostshort) {
+    return bpf_ntohs(hostshort); // Same operation for conversion both ways
+}
+
 // Basic socket address structure
 struct sockaddr {
     __u16 sa_family;
@@ -1849,6 +1877,473 @@ static __always_inline const char* get_syscall_name(__u64 syscall_nr) {
         case 322: return "execveat";
         default: return "unknown";
     }
+}
+
+// Network error types for detailed error handling
+enum network_error_type {
+    NETWORK_ERROR_NONE = 0,
+    NETWORK_ERROR_INVALID_FAMILY = 1,
+    NETWORK_ERROR_INVALID_PROTOCOL = 2,
+    NETWORK_ERROR_ADDRESS_EXTRACTION = 3,
+    NETWORK_ERROR_PORT_EXTRACTION = 4,
+    NETWORK_ERROR_CONTEXT_READ = 5,
+};
+
+// Network information extraction helpers with enhanced error handling
+
+// IPv4 address and port extraction function
+static __always_inline int extract_ipv4_info(struct network_event *event, 
+                                              const struct trace_event_raw_inet_sock_set_state *ctx) {
+    // Validate context pointer
+    if (!ctx) {
+        record_socket_info_error();
+        return NETWORK_ERROR_CONTEXT_READ;
+    }
+    
+    // Extract port information with validation
+    event->sport = ctx->sport;
+    event->dport = ctx->dport;
+    
+    // Validate port numbers (0 is valid for some cases, but we log it)
+    if (event->sport == 0 && event->dport == 0) {
+        // Both ports are zero, which might indicate an error
+        record_socket_info_error();
+        return NETWORK_ERROR_PORT_EXTRACTION;
+    }
+    
+    // Clear IPv6 fields first to ensure clean state (this clears the union)
+    __builtin_memset(event->saddr_v6, 0, 16);
+    __builtin_memset(event->daddr_v6, 0, 16);
+    
+    // Extract IPv4 addresses with bounds checking
+    // The saddr and daddr fields in the tracepoint context contain the raw address bytes
+    if (bpf_probe_read_kernel(&event->saddr_v4, sizeof(event->saddr_v4), ctx->saddr) != 0) {
+        record_socket_info_error();
+        event->saddr_v4 = 0;
+        return NETWORK_ERROR_ADDRESS_EXTRACTION;
+    }
+    
+    if (bpf_probe_read_kernel(&event->daddr_v4, sizeof(event->daddr_v4), ctx->daddr) != 0) {
+        record_socket_info_error();
+        event->daddr_v4 = 0;
+        return NETWORK_ERROR_ADDRESS_EXTRACTION;
+    }
+    
+    return NETWORK_ERROR_NONE;
+}
+
+// IPv6 address and port extraction function
+static __always_inline int extract_ipv6_info(struct network_event *event,
+                                              const struct trace_event_raw_inet_sock_set_state *ctx) {
+    // Validate context pointer
+    if (!ctx) {
+        record_socket_info_error();
+        return NETWORK_ERROR_CONTEXT_READ;
+    }
+    
+    // Extract port information with validation
+    event->sport = ctx->sport;
+    event->dport = ctx->dport;
+    
+    // Validate port numbers
+    if (event->sport == 0 && event->dport == 0) {
+        record_socket_info_error();
+        return NETWORK_ERROR_PORT_EXTRACTION;
+    }
+    
+    // Clear IPv4 fields first to ensure clean state
+    event->saddr_v4 = 0;
+    event->daddr_v4 = 0;
+    
+    // Extract IPv6 addresses with bounds checking
+    // IPv6 addresses are 16 bytes each
+    if (bpf_probe_read_kernel(event->saddr_v6, 16, ctx->saddr_v6) != 0) {
+        record_socket_info_error();
+        __builtin_memset(event->saddr_v6, 0, 16);
+        return NETWORK_ERROR_ADDRESS_EXTRACTION;
+    }
+    
+    if (bpf_probe_read_kernel(event->daddr_v6, 16, ctx->daddr_v6) != 0) {
+        record_socket_info_error();
+        __builtin_memset(event->daddr_v6, 0, 16);
+        return NETWORK_ERROR_ADDRESS_EXTRACTION;
+    }
+    
+    return NETWORK_ERROR_NONE;
+}
+
+// Protocol type identification and validation
+static __always_inline int validate_and_identify_protocol(__u16 protocol) {
+    switch (protocol) {
+        case IPPROTO_TCP:
+            // TCP protocol - connection-oriented, reliable
+            return NETWORK_ERROR_NONE;
+        case IPPROTO_UDP:
+            // UDP protocol - connectionless, unreliable
+            return NETWORK_ERROR_NONE;
+        case IPPROTO_ICMP:
+            // ICMP protocol - control messages
+            return NETWORK_ERROR_NONE;
+        case IPPROTO_ICMPV6:
+            // ICMPv6 protocol - IPv6 control messages
+            return NETWORK_ERROR_NONE;
+        default:
+            // Unknown or unsupported protocol
+            record_socket_info_error();
+            return NETWORK_ERROR_INVALID_PROTOCOL;
+    }
+}
+
+// Address family identification and validation
+static __always_inline int validate_and_identify_family(__u16 family) {
+    switch (family) {
+        case AF_INET:
+            // IPv4 address family
+            return NETWORK_ERROR_NONE;
+        case AF_INET6:
+            // IPv6 address family
+            return NETWORK_ERROR_NONE;
+        default:
+            // Unknown or unsupported address family
+            record_socket_info_error();
+            return NETWORK_ERROR_INVALID_FAMILY;
+    }
+}
+
+// Network event error handling mechanism
+static __always_inline int handle_network_error(enum network_error_type error_type, 
+                                                 struct network_event *event) {
+    // Record the specific error type
+    record_socket_info_error();
+    
+    switch (error_type) {
+        case NETWORK_ERROR_INVALID_FAMILY:
+            // Set family to unknown but continue processing
+            event->family = 0;
+            return 1; // Continue with partial data
+            
+        case NETWORK_ERROR_INVALID_PROTOCOL:
+            // Set protocol to unknown but continue processing
+            event->protocol = 0;
+            return 1; // Continue with partial data
+            
+        case NETWORK_ERROR_ADDRESS_EXTRACTION:
+            // Clear address fields and continue
+            event->saddr_v4 = 0;
+            event->daddr_v4 = 0;
+            __builtin_memset(event->saddr_v6, 0, 16);
+            __builtin_memset(event->daddr_v6, 0, 16);
+            return 1; // Continue with partial data
+            
+        case NETWORK_ERROR_PORT_EXTRACTION:
+            // Port extraction failed, but we can still process the event
+            // Ports might be zero for some legitimate cases
+            return 1; // Continue processing
+            
+        case NETWORK_ERROR_CONTEXT_READ:
+            // Context read failed - this is a serious error
+            return 0; // Drop the event
+            
+        default:
+            return 0; // Drop the event for unknown errors
+    }
+}
+
+// Enhanced network information extraction with comprehensive error handling
+static __always_inline int fill_network_info_from_inet_sock_state(
+    struct network_event *event,
+    const struct trace_event_raw_inet_sock_set_state *ctx) {
+    
+    int error_code = NETWORK_ERROR_NONE;
+    
+    // Validate context pointer first
+    if (!ctx) {
+        return handle_network_error(NETWORK_ERROR_CONTEXT_READ, event);
+    }
+    
+    // Validate and fill address family
+    event->family = ctx->family;
+    error_code = validate_and_identify_family(event->family);
+    if (error_code != NETWORK_ERROR_NONE) {
+        if (!handle_network_error(error_code, event)) {
+            return 0; // Drop event
+        }
+    }
+    
+    // Validate and fill protocol information
+    event->protocol = ctx->protocol;
+    error_code = validate_and_identify_protocol(event->protocol);
+    if (error_code != NETWORK_ERROR_NONE) {
+        if (!handle_network_error(error_code, event)) {
+            return 0; // Drop event
+        }
+    }
+    
+    // Extract address and port information based on family
+    if (event->family == AF_INET) {
+        error_code = extract_ipv4_info(event, ctx);
+        if (error_code != NETWORK_ERROR_NONE) {
+            if (!handle_network_error(error_code, event)) {
+                return 0; // Drop event
+            }
+        }
+    } else if (event->family == AF_INET6) {
+        error_code = extract_ipv6_info(event, ctx);
+        if (error_code != NETWORK_ERROR_NONE) {
+            if (!handle_network_error(error_code, event)) {
+                return 0; // Drop event
+            }
+        }
+    } else {
+        // Unknown family - clear all address fields
+        event->saddr_v4 = 0;
+        event->daddr_v4 = 0;
+        __builtin_memset(event->saddr_v6, 0, 16);
+        __builtin_memset(event->daddr_v6, 0, 16);
+        event->sport = 0;
+        event->dport = 0;
+        
+        if (!handle_network_error(NETWORK_ERROR_INVALID_FAMILY, event)) {
+            return 0; // Drop event
+        }
+    }
+    
+    return 1; // Successfully processed
+}
+
+// Additional network information extraction functions for different contexts
+
+// Extract network information from socket sendmsg/recvmsg tracepoints
+static __always_inline int extract_network_info_from_sock(
+    struct network_event *event,
+    const void *sk) {
+    
+    if (!sk || !event) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // For sock_sendmsg and sock_recvmsg tracepoints, we have limited information
+    // We can extract basic socket information but not full connection details
+    // This is primarily used for data transmission monitoring
+    
+    // Clear all address fields since we don't have access to them in this context
+    event->saddr_v4 = 0;
+    event->daddr_v4 = 0;
+    __builtin_memset(event->saddr_v6, 0, 16);
+    __builtin_memset(event->daddr_v6, 0, 16);
+    event->sport = 0;
+    event->dport = 0;
+    
+    // Set family and protocol to unknown since we can't reliably extract them
+    event->family = 0;
+    event->protocol = 0;
+    
+    return 1;
+}
+
+// Protocol-specific information extraction helpers
+
+// Extract TCP-specific information
+static __always_inline int extract_tcp_info(struct network_event *event,
+                                            const struct trace_event_raw_inet_sock_set_state *ctx) {
+    if (!ctx || !event) {
+        return NETWORK_ERROR_CONTEXT_READ;
+    }
+    
+    // TCP-specific validation
+    if (ctx->protocol != IPPROTO_TCP) {
+        return NETWORK_ERROR_INVALID_PROTOCOL;
+    }
+    
+    // For TCP, we can extract full connection information
+    event->protocol = IPPROTO_TCP;
+    
+    // Extract address information based on family
+    if (ctx->family == AF_INET) {
+        return extract_ipv4_info(event, ctx);
+    } else if (ctx->family == AF_INET6) {
+        return extract_ipv6_info(event, ctx);
+    }
+    
+    return NETWORK_ERROR_INVALID_FAMILY;
+}
+
+// Extract UDP-specific information
+static __always_inline int extract_udp_info(struct network_event *event,
+                                            const struct trace_event_raw_inet_sock_set_state *ctx) {
+    if (!ctx || !event) {
+        return NETWORK_ERROR_CONTEXT_READ;
+    }
+    
+    // UDP-specific validation
+    if (ctx->protocol != IPPROTO_UDP) {
+        return NETWORK_ERROR_INVALID_PROTOCOL;
+    }
+    
+    // For UDP, connection state changes are less meaningful
+    // but we can still extract address information
+    event->protocol = IPPROTO_UDP;
+    
+    // Extract address information based on family
+    if (ctx->family == AF_INET) {
+        return extract_ipv4_info(event, ctx);
+    } else if (ctx->family == AF_INET6) {
+        return extract_ipv6_info(event, ctx);
+    }
+    
+    return NETWORK_ERROR_INVALID_FAMILY;
+}
+
+// Network address validation helpers
+
+// Validate IPv4 address (check for special addresses)
+static __always_inline int is_valid_ipv4_address(__u32 addr) {
+    // Check for invalid addresses
+    if (addr == 0) {
+        return 0; // 0.0.0.0 - invalid
+    }
+    
+    // Convert to host byte order for easier checking
+    __u32 host_addr = bpf_ntohl(addr);
+    
+    // Check for loopback (127.0.0.0/8)
+    if ((host_addr & 0xFF000000) == 0x7F000000) {
+        return 1; // Loopback is valid but special
+    }
+    
+    // Check for private networks (valid but special)
+    // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    if ((host_addr & 0xFF000000) == 0x0A000000 ||
+        (host_addr & 0xFFF00000) == 0xAC100000 ||
+        (host_addr & 0xFFFF0000) == 0xC0A80000) {
+        return 1; // Private networks are valid
+    }
+    
+    // Check for multicast (224.0.0.0/4)
+    if ((host_addr & 0xF0000000) == 0xE0000000) {
+        return 1; // Multicast is valid
+    }
+    
+    // Check for broadcast (255.255.255.255)
+    if (host_addr == 0xFFFFFFFF) {
+        return 1; // Broadcast is valid
+    }
+    
+    return 1; // Assume other addresses are valid
+}
+
+// Validate IPv6 address (basic validation)
+static __always_inline int is_valid_ipv6_address(const __u8 *addr) {
+    if (!addr) {
+        return 0;
+    }
+    
+    // Check for all-zero address (::)
+    int all_zero = 1;
+    for (int i = 0; i < 16; i++) {
+        if (addr[i] != 0) {
+            all_zero = 0;
+            break;
+        }
+    }
+    
+    if (all_zero) {
+        return 0; // All-zero address is invalid for connections
+    }
+    
+    // Check for loopback (::1)
+    int is_loopback = 1;
+    for (int i = 0; i < 15; i++) {
+        if (addr[i] != 0) {
+            is_loopback = 0;
+            break;
+        }
+    }
+    if (is_loopback && addr[15] == 1) {
+        return 1; // Loopback is valid
+    }
+    
+    return 1; // Assume other addresses are valid
+}
+
+// Enhanced network information validation
+static __always_inline int validate_network_info(struct network_event *event) {
+    if (!event) {
+        return 0;
+    }
+    
+    // Validate address family
+    if (event->family != AF_INET && event->family != AF_INET6) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // Validate protocol
+    if (event->protocol != IPPROTO_TCP && 
+        event->protocol != IPPROTO_UDP &&
+        event->protocol != IPPROTO_ICMP &&
+        event->protocol != IPPROTO_ICMPV6) {
+        record_socket_info_error();
+        return 0;
+    }
+    
+    // Validate addresses based on family
+    if (event->family == AF_INET) {
+        if (!is_valid_ipv4_address(event->saddr_v4) || 
+            !is_valid_ipv4_address(event->daddr_v4)) {
+            record_socket_info_error();
+            return 0;
+        }
+    } else if (event->family == AF_INET6) {
+        if (!is_valid_ipv6_address(event->saddr_v6) || 
+            !is_valid_ipv6_address(event->daddr_v6)) {
+            record_socket_info_error();
+            return 0;
+        }
+    }
+    
+    // Port validation (0 is valid for some cases)
+    // We don't fail validation for port 0, but we log it
+    if (event->sport == 0 || event->dport == 0) {
+        // Log but don't fail - some legitimate cases have port 0
+        record_socket_info_error();
+    }
+    
+    return 1;
+}
+
+// Network event processing helpers
+static __always_inline int should_process_network_event(__u16 family, __u16 protocol) {
+    // First check if network monitoring is enabled
+    if (!should_process_event(MONITOR_NETWORK)) {
+        return 0;
+    }
+    
+    // Check protocol-specific configuration
+    if (protocol == IPPROTO_TCP && !is_tcp_monitoring_enabled()) {
+        return 0;
+    }
+    
+    if (protocol == IPPROTO_UDP && !is_udp_monitoring_enabled()) {
+        return 0;
+    }
+    
+    // Check IPv6 configuration
+    if (family == AF_INET6 && !is_ipv6_monitoring_enabled()) {
+        return 0;
+    }
+    
+    // Apply network-specific sampling
+    __u32 rate = 100;
+    if (get_network_sampling_rate(&rate) == 0) {
+        if (!should_sample(rate)) {
+            record_network_sampling_skipped();
+            return 0;
+        }
+    }
+    
+    return 1;
 }
 
 #endif /* USE_KPROBE_FALLBACK */
